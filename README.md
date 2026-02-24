@@ -125,15 +125,76 @@ etl-b3/
 git clone https://github.com/Gabriel-br07/etl-b3.git
 cd etl-b3
 cp .env.example .env
+```
 
 # 2. Place B3 files in data/sample/ (see naming convention below)
 #    Or use the included sample fixtures.
 
 # 3. Start services
+```bash
 docker-compose up --build
+```
 
 # 4. Open Scalar docs
+```bash
 open http://localhost:8000/scalar
+```
+
+### Start only the PostgreSQL database (Docker)
+
+If you only want to run the database (useful to run migrations or start the API locally against a DB), you can:
+
+Option A — using `docker-compose` (recommended when working with this repo):
+
+```powershell
+# Start only the 'db' service defined in docker-compose.yml (detached)
+docker-compose up -d db
+
+# Follow logs (optional)
+docker-compose logs -f db --tail 50
+
+# Check containers and health status
+docker-compose ps
+```
+
+Option B — using `docker run` (standalone container):
+
+```powershell
+# Run Postgres with the same defaults used by the project
+docker run --name etl-b3-postgres \
+  -e POSTGRES_USER=etlb3 \
+  -e POSTGRES_PASSWORD=etlb3pass \
+  -e POSTGRES_DB=etlb3 \
+  -p 5432:5432 \
+  -v etl-b3-postgres-data:/var/lib/postgresql/data \
+  -d postgres:16-alpine
+
+# View logs
+docker logs -f etl-b3-postgres --tail 50
+
+# Stop and remove when done
+docker rm -f etl-b3-postgres
+```
+
+Notes:
+- The `docker-compose.yml` in this repo exposes Postgres on the host at port `5432` and sets the default credentials to:
+
+```
+POSTGRES_USER=etlb3
+POSTGRES_PASSWORD=etlb3pass
+POSTGRES_DB=etlb3
+```
+
+- When connecting from your host (for example from `alembic` or `psql`), use:
+
+```
+DATABASE_URL=postgresql://etlb3:etlb3pass@localhost:5432/etlb3
+```
+
+- To stop and remove all compose services and volumes (clean state):
+
+```powershell
+docker-compose down -v
 ```
 
 ---
@@ -313,3 +374,4 @@ B3 does not provide a stable REST API for public file discovery. The HTML page s
 - [ ] CI/CD pipeline (GitHub Actions)
 - [ ] Data quality checks (Great Expectations or dbt tests)
 - [ ] Corporate actions / splits handling
+
