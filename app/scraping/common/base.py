@@ -23,6 +23,8 @@ class ScrapeResult:
     suggested_filename: str
     saved_filename: str
     original_file_path: Path | None = None
+    # New field: path to the normalized (converted) file, if produced.
+    normalized_file_path: Path | None = None
     downloaded_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     target_date: date | None = None
     # Conversion status: True when post-download CSV normalization succeeded.

@@ -34,9 +34,3 @@ def screenshots_dir(base_dir: str | Path, site: str) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
 
-
-def traces_dir(base_dir: str | Path, site: str) -> Path:
-    """Return (and create) the trace-recording directory for *site*."""
-    path = Path(base_dir) / site
-    path.mkdir(parents=True, exist_ok=True)
-    return path
