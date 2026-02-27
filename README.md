@@ -454,55 +454,17 @@ playwright show-trace data/traces/b3/trace_2024-06-14_success.zip
 ### Scraper environment variables
 
 | Variable | Default | Description |
-|---|---|---|
+|---|---:|---|
 | `PLAYWRIGHT_HEADLESS` | `false` | `true` = headless (CI), `false` = visible browser (dev) |
 | `PLAYWRIGHT_SLOW_MO` | `0` | ms delay between actions; `300–800` is good for watching |
 | `PLAYWRIGHT_TIMEOUT_MS` | `30000` | Default wait timeout for elements and navigation |
-| `PLAYWRIGHT_DOWNLOADS_DIR` | `data/raw` | Playwright temp downloads directory |
-| `B3_OUTPUT_DIR` | `data/raw` | Root dir for saved scraper output |
+| `PLAYWRIGHT_DOWNLOADS_DIR` | `data/raw` | Playwright temporary downloads directory (used by the browser during capture) |
+| `PLAYWRIGHT_PAUSE_AFTER_OPEN_MS` | `2000` | Pause (ms) right after opening the entrypoint page to allow dynamic content to render |
+| `PLAYWRIGHT_PAUSE_BETWEEN_ACTIONS_MS` | `800` | Small pause (ms) between interactive actions (clicks/selects) to improve stability/observability |
+| `B3_OUTPUT_DIR` | `data/raw` | Root directory for saved scraper output |
 | `B3_SCREENSHOTS_DIR` | `data/screenshots` | Where step/failure screenshots are saved |
 | `B3_TRACE_DIR` | `data/traces` | Where Playwright traces are saved |
-
-### Running E2E tests
-
-**All scraper tests (requires internet + Playwright Chromium):**
-
-```bash
-pytest tests/e2e/
-```
-
-**Selector resilience tests only** (no network, fast – great for CI):
-
-```bash
-pytest tests/e2e/test_b3_scraper.py::TestB3SelectorsResilience -v
-```
-
-**Skip all live/e2e tests** (existing unit tests only):
-
-```bash
-pytest -m "not e2e and not live"
-```
-
-**Headed browser with slow-mo** (watch the test run):
-
-```bash
-pytest tests/e2e/ --headed --slowmo 500
-```
-
-**Playwright Inspector in tests** (step through test actions):
-
-```powershell
-# Windows PowerShell
-$env:PWDEBUG="1"; pytest tests/e2e/ --headed -s
-```
-
-**Always-on trace recording** (saves zip to `data/traces/`):
-
-```bash
-pytest tests/e2e/ --tracing=on --output=data/traces
-```
-
-**Screenshots on failure** land automatically in `data/screenshots/e2e/` via the conftest hook.
+| `PWDEBUG` | `1` | Playwright debug inspector flag — set to `1` to enable the interactive inspector (PWDEBUG) |
 
 ---
 

@@ -14,12 +14,17 @@ dependencies = [
     "prefect>=3.6.19",
     "psycopg2>=2.9.11",
     "pydantic-settings>=2.13.1",
-    "pytest>=9.0.2",
-    "pytest-playwright>=0.5.0",
     "scalar-fastapi>=1.6.2",
     "sqlalchemy>=2.0.47",
     "tenacity>=9.1.4",
     "uvicorn>=0.41.0",
+]
+
+[project.optional-dependencies]
+# Development and test dependencies used in CI and by developers
+dev = [
+    "pytest>=9.0.2",
+    "pytest-playwright>=0.5.0",
 ]
 
 [tool.setuptools]
@@ -37,4 +42,3 @@ markers = [
 [tool.playwright]
 # Default browser for pytest-playwright
 browser = "chromium"
-
