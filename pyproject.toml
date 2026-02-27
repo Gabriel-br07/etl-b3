@@ -1,0 +1,40 @@
+[project]
+name = "etl-b3"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.18.4",
+    "fastapi>=0.133.0",
+    "httpx>=0.27.0",
+    "perfect>=0.0.1",
+    "playwright>=1.44.0",
+    "polars>=1.38.1",
+    "prefect>=3.6.19",
+    "psycopg2>=2.9.11",
+    "pydantic-settings>=2.13.1",
+    "pytest>=9.0.2",
+    "pytest-playwright>=0.5.0",
+    "scalar-fastapi>=1.6.2",
+    "sqlalchemy>=2.0.47",
+    "tenacity>=9.1.4",
+    "uvicorn>=0.41.0",
+]
+
+[tool.setuptools]
+# opção simples: listar pacotes explicitamente
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    "e2e: end-to-end tests that require a browser (deselect with -m 'not e2e')",
+    "live: tests that make real network requests to external sites",
+]
+
+[tool.playwright]
+# Default browser for pytest-playwright
+browser = "chromium"
+
