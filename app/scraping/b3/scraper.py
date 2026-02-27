@@ -280,8 +280,9 @@ class BoletimDiarioScraper(BaseScraper):
         """Assert *locator* is visible; capture screenshot and raise if not."""
         if not locator.is_visible():
             ss_path: Path | None = None
-            if self._capture_screenshots or True:  # always capture on error
-                ss_path = self._screenshot(page, ss_dir, f"error_{description[:30]}")
+            # Always capture a screenshot on error to aid debugging. This
+            # clarifies the previous intent (the `or True` was redundant).
+            ss_path = self._screenshot(page, ss_dir, f"error_{description[:30]}")
             raise ElementNotFoundError(
                 f"Element not found or not visible: {description}",
                 screenshot_path=ss_path,

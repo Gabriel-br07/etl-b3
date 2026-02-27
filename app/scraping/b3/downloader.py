@@ -66,13 +66,16 @@ def save_download(
       - Quoting is preserved using csv.writer quoting rules.
 
     Returns a ScrapeResult with both suggested_filename (from Playwright)
-    and saved_filename (the application-determined name).
+    and saved_filename (the application-determined name). When normalization
+    succeeds for CSV files, `normalized_file_path` is populated and
+    `saved_filename` is updated to the normalized filename so downstream
+    consumers that rely on `saved_filename` see the canonical output.
     """
     failure = download.failure()
     if failure:
         raise DownloadError(f"Playwright reported download failure: {failure}")
 
-    # Application-determined filename (deterministic)
+    # Application-determined filename (deterministic) for the raw/original file
     saved_filename = filename_template.format(date=target_date.strftime("%Y%m%d"))
     dest = output_dir / saved_filename
 
@@ -88,6 +91,7 @@ def save_download(
         suggested_filename=download.suggested_filename or "",
         saved_filename=saved_filename,
         original_file_path=dest,
+        normalized_file_path=None,
         downloaded_at=datetime.now(UTC),
         target_date=target_date,
         conversion_succeeded=False,
@@ -104,8 +108,10 @@ def save_download(
                 default_delimiter=default_delimiter,
             )
             result.conversion_succeeded = True
-            # Update file_path to normalized file so downstream consumers pick it up
-            result.file_path = norm_path
+            # Keep file_path pointing to the raw/original file; record normalized path
+            result.normalized_file_path = norm_path
+            # Update saved_filename to reflect the canonical output (normalized file name)
+            result.saved_filename = norm_path.name
             logger.info(
                 "Normalized CSV saved: %s (size=%d bytes)",
                 norm_path,
