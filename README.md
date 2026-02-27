@@ -94,7 +94,6 @@ etl-b3/
 │   ├── core/             # Config, logging, constants
 │   ├── db/               # SQLAlchemy engine, session, ORM models
 │   ├── schemas/          # Pydantic request/response schemas
-│   ├── services/         # Business logic (future)
 │   ├── repositories/     # DB CRUD / upsert logic
 │   ├── etl/
 │   │   ├── ingestion/    # Source adapters (local + remote)
@@ -102,12 +101,23 @@ etl-b3/
 │   │   ├── transforms/   # Polars transformation functions
 │   │   ├── loaders/      # DB loading (upsert wrappers)
 │   │   └── orchestration/ # Prefect flows
+│   ├── scraping/         # Playwright browser-based scrapers
+│   │   ├── common/       # BaseScraper, browser factory, storage, exceptions
+│   │   ├── b3/           # B3 Boletim Diário scraper (selectors, downloader)
+│   │   └── site2/        # TODO: second site (placeholder)
 │   └── main.py
 ├── alembic/              # DB migration scripts
 ├── tests/
+│   ├── e2e/              # Playwright E2E tests (pytest-playwright)
 │   └── fixtures/         # Sample B3-like CSV/ZIP files
-├── scripts/              # CLI entry points
-├── data/sample/          # Local B3 source files (fallback mode)
+├── scripts/
+│   ├── run_etl.py        # ETL pipeline CLI
+│   └── run_b3_scraper.py # Playwright scraper CLI
+├── data/
+│   ├── sample/           # Local B3 source files (fallback mode)
+│   ├── raw/              # Scraper downloads land here
+│   ├── screenshots/      # Step / failure screenshots
+│   └── traces/           # Playwright trace recordings
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml
@@ -362,9 +372,144 @@ B3 does not provide a stable REST API for public file discovery. The HTML page s
 
 ---
 
+## Playwright Scraper (Browser-Based Download)
+
+The `app/scraping/` module automates the B3 Boletim Diário web page using Playwright
+to click through the UI and download the CSV files directly from the browser.
+
+### Architecture
+
+```
+app/scraping/
+├── __init__.py
+├── common/
+│   ├── base.py           # BaseScraper ABC + ScrapeResult dataclass
+│   ├── browser.py        # Playwright browser/context factory (reads Settings)
+│   ├── exceptions.py     # ElementNotFoundError, DownloadError, NavigationError
+│   └── storage.py        # Deterministic output-path helpers
+├── b3/
+│   ├── __init__.py
+│   ├── scraper.py        # BoletimDiarioScraper (full browser flow)
+│   ├── selectors.py      # B3Selectors – all DOM locators in one place
+│   └── downloader.py     # Playwright download capture + ScrapeResult
+└── site2/                # TODO: second site (placeholder)
+    ├── __init__.py
+    └── scraper.py
+```
+
+Downloaded files land in:
+```
+data/raw/b3/boletim_diario/<YYYY-MM-DD>/cadastro_instrumentos_YYYYMMDD.csv
+```
+
+### First-time setup
+
+```bash
+# Install Playwright browser (once per machine / Docker build)
+python -m playwright install chromium
+```
+
+### Running the scraper
+
+**Normal run** (reads `PLAYWRIGHT_HEADLESS` from `.env`, default = headed/visible):
+
+```bash
+python scripts/run_b3_scraper.py
+```
+
+**Run for a specific date:**
+
+```bash
+python scripts/run_b3_scraper.py --date 2024-06-14
+```
+
+**Visual / debug run** – browser visible, slowed down, screenshots after each step:
+
+```bash
+python scripts/run_b3_scraper.py --no-headless --slow-mo 500 --screenshots
+```
+
+**Full debug** – headed + slow + screenshots + trace recording:
+
+```bash
+python scripts/run_b3_scraper.py --no-headless --slow-mo 800 --screenshots --traces
+```
+
+**Playwright Inspector** (step through each action interactively):
+
+```powershell
+# Windows PowerShell
+$env:PWDEBUG="1"; python scripts/run_b3_scraper.py --no-headless
+
+# Linux / macOS
+PWDEBUG=1 python scripts/run_b3_scraper.py --no-headless
+```
+
+**View a saved trace:**
+
+```bash
+playwright show-trace data/traces/b3/trace_2024-06-14_success.zip
+```
+
+### Scraper environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PLAYWRIGHT_HEADLESS` | `false` | `true` = headless (CI), `false` = visible browser (dev) |
+| `PLAYWRIGHT_SLOW_MO` | `0` | ms delay between actions; `300–800` is good for watching |
+| `PLAYWRIGHT_TIMEOUT_MS` | `30000` | Default wait timeout for elements and navigation |
+| `PLAYWRIGHT_DOWNLOADS_DIR` | `data/raw` | Playwright temp downloads directory |
+| `B3_OUTPUT_DIR` | `data/raw` | Root dir for saved scraper output |
+| `B3_SCREENSHOTS_DIR` | `data/screenshots` | Where step/failure screenshots are saved |
+| `B3_TRACE_DIR` | `data/traces` | Where Playwright traces are saved |
+
+### Running E2E tests
+
+**All scraper tests (requires internet + Playwright Chromium):**
+
+```bash
+pytest tests/e2e/
+```
+
+**Selector resilience tests only** (no network, fast – great for CI):
+
+```bash
+pytest tests/e2e/test_b3_scraper.py::TestB3SelectorsResilience -v
+```
+
+**Skip all live/e2e tests** (existing unit tests only):
+
+```bash
+pytest -m "not e2e and not live"
+```
+
+**Headed browser with slow-mo** (watch the test run):
+
+```bash
+pytest tests/e2e/ --headed --slowmo 500
+```
+
+**Playwright Inspector in tests** (step through test actions):
+
+```powershell
+# Windows PowerShell
+$env:PWDEBUG="1"; pytest tests/e2e/ --headed -s
+```
+
+**Always-on trace recording** (saves zip to `data/traces/`):
+
+```bash
+pytest tests/e2e/ --tracing=on --output=data/traces
+```
+
+**Screenshots on failure** land automatically in `data/screenshots/e2e/` via the conftest hook.
+
+---
+
 ## Next Steps
 
-- [ ] Implement HTML scraping of B3 Boletim Diário page for automatic file discovery
+- [x] Implement HTML scraping of B3 Boletim Diário page for automatic file discovery (Playwright scraper in `app/scraping/b3/`)
+- [ ] Implement site 2 scraper (provide URL + interaction steps — placeholder is ready in `app/scraping/site2/`)
 - [ ] Add Prefect server / scheduling (e.g., daily cron at 20:00 BRT)
 - [ ] Add async background tasks for ETL execution (FastAPI BackgroundTasks or Celery)
 - [ ] Intraday data provider integration (B3 FTP or paid data vendor)
