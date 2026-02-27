@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """CLI entry-point for the B3 Boletim Diário Playwright scraper.
 
 Usage examples
