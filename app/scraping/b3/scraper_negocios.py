@@ -164,10 +164,9 @@ class NegociosConsolidadosScraper(BaseScraper):
         # Step 2 – Click "Renda variável" tab
         logger.info("Clicking 'Renda variável' tab …")
         # Optional pause before clicking Renda variável (page may still be settling)
-        before_renda = int(settings.playwright_pause_before_renda_variavel_ms or 0)
-        if before_renda > 0:
-            logger.debug("Pausing %sms before clicking Renda variável", before_renda)
-            page.wait_for_timeout(2000)
+        # log the concrete pause (2000 ms) to match the following wait
+        logger.debug("Pausing %sms before clicking Renda variável", 2000)
+        page.wait_for_timeout(2000)
         self._safe_click(page, sel.tab_renda_variavel(), "Renda variável tab", ss_dir)
         # Small pause after clicking tab to allow dropdown/rendering
         between = int(settings.playwright_pause_between_actions_ms or 0)
@@ -294,9 +293,8 @@ class NegociosConsolidadosScraper(BaseScraper):
     def _assert_visible(self, locator, description: str, page, ss_dir: Path) -> None:
         """Assert *locator* is visible; capture screenshot and raise if not."""
         if not locator.is_visible():
-            ss_path: Path | None = None
-            if self._capture_screenshots or True:  # always capture on error
-                ss_path = self._screenshot(page, ss_dir, f"error_{description[:30]}")
+            # Always capture a screenshot on error (explicit intent).
+            ss_path = self._screenshot(page, ss_dir, f"error_{description[:30]}")
             raise ElementNotFoundError(
                 f"Element not found or not visible: {description}",
                 screenshot_path=ss_path,
