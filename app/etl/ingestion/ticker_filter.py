@@ -326,7 +326,7 @@ def _apply_negocios_filter(
 
     for row in rows:
         raw_ticker = (row.get(col_ticker) or "").strip().upper()
-        if not raw_ticker or " " in raw_ticker or len(raw_ticker) > 20:
+        if not raw_ticker or " " in raw_ticker or len(raw_ticker) > MAX_TICKER_LENGTH:
             continue
 
         # Filter: Quantidade de negócios > 0
@@ -463,7 +463,6 @@ def build_ticker_filter(
     # ------------------------------------------------------------------
     # Step 3 – Compute strict and master-only lists
     # ------------------------------------------------------------------
-    master_set = set(master_tickers)
 
     # strict: in master AND in negocios active set, preserving master order
     strict = [t for t in master_tickers if t in active_tickers]

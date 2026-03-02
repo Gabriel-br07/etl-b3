@@ -305,47 +305,20 @@ def run_batch_quote_ingestion(
                 http_status: int | str = "ERROR"
 
                 try:
-                    # Temporarily patch the internal _get so we can capture
-                    # the raw status code for the report without changing client.py
-                    _original_request = client._request_with_retry
-
-                    _last_status: list[int] = []
-
-                    def _patched_request(*, url: str, ticker: str = ticker) -> httpx.Response:  # type: ignore[misc]
-                        resp = client._get(url)  # type: ignore[union-attr]
-                        _last_status.append(resp.status_code)
-                        # Re-run the real logic on the already-obtained response
-                        from app.integrations.b3.exceptions import (
-                            B3TemporaryBlockError,
-                            B3TickerNotFoundError,
-                            B3UnexpectedResponseError,
-                        )
-                        _BLOCK = frozenset({403, 429})
-                        if resp.status_code in _BLOCK:
-                            client.warm_session()  # type: ignore[union-attr]
-                            resp = client._get(url)  # type: ignore[union-attr]
-                            _last_status[-1] = resp.status_code
-                            if resp.status_code in _BLOCK:
-                                raise B3TemporaryBlockError(
-                                    status_code=resp.status_code, ticker=ticker
-                                )
-                        if resp.status_code == 404:
-                            raise B3TickerNotFoundError(ticker=ticker)
-                        if not (200 <= resp.status_code < 300):
-                            raise B3UnexpectedResponseError(
-                                f"B3 returned unexpected HTTP {resp.status_code} for ticker '{ticker}'.",
-                                status_code=resp.status_code,
-                                raw_body=resp.text[:300],
-                            )
-                        return resp
-
-                    client._request_with_retry = _patched_request  # type: ignore[method-assign]
-
+                    # Use the public client API and capture status code without
+                    # monkey-patching private methods.
                     try:
                         raw_payload = client.get_daily_fluctuation_history(ticker)
-                        http_status = _last_status[0] if _last_status else 200
-                    finally:
-                        client._request_with_retry = _original_request  # type: ignore[method-assign]
+                        # If no exception is raised, we assume a successful 2xx response.
+                        # B3 typically returns 200 for successful intraday series queries.
+                        http_status = 200
+                    except B3ClientError as exc:
+                        # Record the HTTP status code from the exception (if available)
+                        # so that the outer handler and report can use it.
+                        status = getattr(exc, "status_code", None)
+                        if status is not None:
+                            http_status = status
+                        raise
 
                     record = _build_jsonl_record(
                         ticker_requested=ticker,
