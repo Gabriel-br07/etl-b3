@@ -49,6 +49,33 @@ class Settings(BaseSettings):
     # Small pause between interactive actions (clicks/selects)
     playwright_pause_between_actions_ms: int = 800
 
+    # ---------------------------------------------------------------------------
+    # B3 live quote snapshot (DailyFluctuationHistory public endpoint)
+    # ---------------------------------------------------------------------------
+
+    #: Base URL for the B3 public market-data service (cotacao.b3.com.br).
+    #: Full endpoint: {b3_quote_base_url}/DailyFluctuationHistory/{ticker}
+    b3_quote_base_url: str = "https://cotacao.b3.com.br/mds/api/v1"
+
+    #: Public page visited during session warm-up to obtain cookies naturally.
+    b3_quote_warm_session_url: str = (
+        "https://www.b3.com.br/pt_br/market-data-e-indices/servicos-de-dados/"
+        "market-data/consultas/mercado-a-vista/variacao-diaria/mercado-continuo/"
+    )
+
+    #: Request timeout in seconds for the quote HTTP client.
+    b3_quote_timeout: float = 15.0
+
+
+    #: Enable HTTP/2 for the quote client (reduces latency when supported).
+    b3_quote_http2: bool = False
+
+    #: Per-ticker in-memory cache TTL in seconds.  Set to 0 to disable cache.
+    b3_quote_cache_ttl: int = 300  # 5 minutes
+
+    #: Maximum number of retry attempts for quote requests.
+    #: Env var: B3_QUOTE_MAX_RETRIES
+    b3_quote_max_retries: int = 3
     # Logging
     log_level: str = "INFO"
 

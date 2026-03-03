@@ -44,12 +44,13 @@ def load_downloader_module():
     fake_base = ModuleType("app.scraping.common.base")
 
     class ScrapeResult:
-        def __init__(self, *, source_url: str = "", file_path=None, suggested_filename: str = "", saved_filename: str = "", original_file_path=None, downloaded_at=None, target_date=None, conversion_succeeded: bool = False, conversion_error=None):
+        def __init__(self, *, source_url: str = "", file_path=None, suggested_filename: str = "", saved_filename: str = "", original_file_path=None, normalized_file_path=None, downloaded_at=None, target_date=None, conversion_succeeded: bool = False, conversion_error=None):
             self.source_url = source_url
             self.file_path = file_path
             self.suggested_filename = suggested_filename
             self.saved_filename = saved_filename
             self.original_file_path = original_file_path
+            self.normalized_file_path = normalized_file_path
             self.downloaded_at = downloaded_at
             self.target_date = target_date
             self.conversion_succeeded = conversion_succeeded
@@ -148,10 +149,11 @@ def test_save_download_creates_raw_and_normalized_and_returns_result(tmp_path):
     assert expected_raw.exists(), "Raw/original file must exist"
     assert expected_norm.exists(), "Normalized file must exist"
 
-    # Result metadata should point to normalized file (file_path) and original_file_path should be raw
-    assert result.file_path == expected_norm
+    # file_path stays pointing at the raw file; normalized_file_path holds the normalized path
+    assert result.file_path == expected_raw
+    assert result.normalized_file_path == expected_norm
     assert result.original_file_path == expected_raw
-    assert result.saved_filename == "cadastro_instrumentos_20240614.csv"
+    assert result.saved_filename == "cadastro_instrumentos_20240614.normalized.csv"
     assert result.suggested_filename == "downloaded.csv"
 
     # Conversion should have succeeded for this CSV
