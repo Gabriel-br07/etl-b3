@@ -738,7 +738,7 @@ All values have sensible defaults and can be overridden via environment variable
 
 | Variable | Default | Description |
 |---|---|---|
-| `B3_QUOTE_BASE_URL` | `https://sistemaswebb3-listados.b3.com.br/mdsProxy/proxy/api/v1` | Base URL for the market-data proxy |
+| `B3_QUOTE_BASE_URL` | `https://cotacao.b3.com.br/mds/api/v1` | Base URL for the market-data proxy |
 | `B3_QUOTE_WARM_SESSION_URL` | B3 public quote page URL | Page visited to obtain session cookies |
 | `B3_QUOTE_TIMEOUT` | `15.0` | HTTP request timeout in seconds |
 | `B3_QUOTE_HTTP2` | `false` | Enable HTTP/2 for the quote client |

@@ -66,9 +66,6 @@ class Settings(BaseSettings):
     #: Request timeout in seconds for the quote HTTP client.
     b3_quote_timeout: float = 15.0
 
-    #: Number of automatic retries after a 403/429 (0 = no retry beyond the
-    #: single built-in warm-up retry in the client).
-    b3_quote_max_retries: int = 1
 
     #: Enable HTTP/2 for the quote client (reduces latency when supported).
     b3_quote_http2: bool = False

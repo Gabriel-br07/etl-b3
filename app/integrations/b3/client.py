@@ -152,27 +152,34 @@ class B3QuoteClient:
     # ------------------------------------------------------------------
 
     def _request_with_retry(self, *, url: str, ticker: str) -> httpx.Response:
-        """Perform the GET request, retrying once after a warm-up on 403/429."""
+        """Perform the GET request, retrying after a warm-up on 403/429."""
+        # Default to 1 retry to preserve existing behavior if the setting is absent.
+        max_retries = getattr(settings, "b3_quote_max_retries", 1)
+
         response = self._get(url)
 
-        if response.status_code in _BLOCK_STATUSES:
+        retries = 0
+        while response.status_code in _BLOCK_STATUSES and retries < max_retries:
             logger.warning(
-                "B3 returned %d for ticker '%s' – warming session and retrying once.",
+                "B3 returned %d for ticker '%s' – warming session and retrying "
+                "(attempt %d of %d).",
                 response.status_code,
                 ticker,
+                retries + 1,
+                max_retries,
             )
             self.warm_session()
             response = self._get(url)
+            retries += 1
 
-            if response.status_code in _BLOCK_STATUSES:
-                logger.error(
-                    "B3 still returning %d for ticker '%s' after retry.",
-                    response.status_code,
-                    ticker,
-                )
-                raise B3TemporaryBlockError(
-                    status_code=response.status_code, ticker=ticker
-                )
+        if response.status_code in _BLOCK_STATUSES:
+            logger.error(
+                "B3 still returning %d for ticker '%s' after %d retry attempt(s).",
+                response.status_code,
+                ticker,
+                retries,
+            )
+            raise B3TemporaryBlockError(status_code=response.status_code, ticker=ticker)
 
         if response.status_code == 404:
             raise B3TickerNotFoundError(ticker=ticker)

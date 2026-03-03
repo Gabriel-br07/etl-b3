@@ -111,7 +111,14 @@ def get_quote_snapshot(ticker: str) -> dict:
     try:
         quote = get_daily_fluctuation(ticker)
     except B3TickerNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "ticker_not_found",
+                "message": str(exc),
+                "ticker": getattr(exc, "ticker", ticker),
+            },
+        ) from exc
     except B3TemporaryBlockError as exc:
         raise HTTPException(
             status_code=503,

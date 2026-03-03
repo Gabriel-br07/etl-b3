@@ -480,7 +480,6 @@ def build_ticker_filter(
     # ------------------------------------------------------------------
     # Step 3 – Compute strict and master-only lists
     # ------------------------------------------------------------------
-    master_set = set(master_tickers)
 
     # strict: in master AND in negocios active set, preserving master order
     strict = [t for t in master_tickers if t in active_tickers]
