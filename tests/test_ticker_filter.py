@@ -551,7 +551,7 @@ def test_build_ticker_filter_no_spaces_in_tickers():
 # _find_negocios_sibling  (auto-discovery used by run_b3_quote_batch.py)
 # ---------------------------------------------------------------------------
 
-from app.etl.ingestion.autodiscover import _find_negocios_sibling
+
 
 
 def test_find_negocios_sibling_exact_date_match(tmp_path):

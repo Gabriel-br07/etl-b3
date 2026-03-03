@@ -505,7 +505,8 @@ def test_route_snapshot_404(api_client):
         resp = api_client.get("/quotes/XXXXXX/snapshot")
 
     assert resp.status_code == 404
-    assert "XXXXXX" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert detail["ticker"] == "XXXXXX"
 
 
 def test_route_snapshot_503_temporary_block(api_client):

@@ -310,8 +310,10 @@ def run_batch_quote_ingestion(
                     try:
                         raw_payload = client.get_daily_fluctuation_history(ticker)
                         # If no exception is raised, we assume a successful 2xx response.
-                        # B3 typically returns 200 for successful intraday series queries.
-                        http_status = 200
+                        # Prefer an upstream status code exposed by the client, if any,
+                        # otherwise fall back to 200 to preserve existing behavior.
+                        status = getattr(client, "last_status_code", None)
+                        http_status = status if status is not None else 200
                     except B3ClientError as exc:
                         # Record the HTTP status code from the exception (if available)
                         # so that the outer handler and report can use it.

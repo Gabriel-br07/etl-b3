@@ -185,7 +185,14 @@ def get_ticker_latest_snapshot(ticker: str) -> dict:
     try:
         snapshot = get_latest_snapshot(ticker)
     except B3TickerNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "ticker_not_found",
+                "message": str(exc),
+                "ticker": getattr(exc, "ticker", ticker),
+            },
+        ) from exc
     except B3TemporaryBlockError as exc:
         raise HTTPException(
             status_code=503,
@@ -258,7 +265,14 @@ def get_ticker_intraday_series(ticker: str) -> dict:
     try:
         series = get_intraday_series(ticker)
     except B3TickerNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "ticker_not_found",
+                "message": str(exc),
+                "ticker": exc.ticker if hasattr(exc, "ticker") else ticker,
+            },
+        ) from exc
     except B3TemporaryBlockError as exc:
         raise HTTPException(
             status_code=503,

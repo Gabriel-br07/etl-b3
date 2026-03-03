@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     #: Per-ticker in-memory cache TTL in seconds.  Set to 0 to disable cache.
     b3_quote_cache_ttl: int = 300  # 5 minutes
 
+    #: Maximum number of retry attempts for quote requests.
+    #: Env var: B3_QUOTE_MAX_RETRIES
+    b3_quote_max_retries: int = 3
     # Logging
     log_level: str = "INFO"
 
