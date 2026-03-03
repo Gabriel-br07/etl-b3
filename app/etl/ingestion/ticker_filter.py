@@ -71,6 +71,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from app.integrations.b3.constants import MAX_TICKER_LENGTH
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -123,6 +125,7 @@ def _parse_date(raw: str | None) -> date | None:
 # Column-name normalisation helpers
 # ---------------------------------------------------------------------------
 
+
 def _normalise_key(name: str) -> str:
     """Lower-case, strip, and remove accents from *name* for fuzzy lookup."""
     nfkd = unicodedata.normalize("NFKD", name.strip().lower())
@@ -143,12 +146,14 @@ def _resolve_col(col_index: dict[str, str], desired: str) -> str | None:
 # CSV reading helper
 # ---------------------------------------------------------------------------
 
+
 def _read_normalized_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     """Read a normalized B3 CSV and return (headers, rows).
 
     Tries UTF-8 first, then Latin-1 as fallback.
     Rows are plain dicts keyed by the original header strings.
     """
+    last_error: Exception | None = None
     for enc in ("utf-8-sig", "utf-8", "latin-1"):
         try:
             with open(path, newline="", encoding=enc) as fh:
@@ -157,14 +162,24 @@ def _read_normalized_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
                 headers = list(reader.fieldnames or [])
                 rows = list(reader)
             return headers, rows
-        except (UnicodeDecodeError, Exception):
+        except UnicodeDecodeError as e:
+            # Only swallow decoding-related errors here; record last for context
+            last_error = e
             continue
+    # If we reach here, none of the attempted encodings worked. Raise a clear
+    # ValueError and attach the last UnicodeDecodeError as the __cause__ so the
+    # original traceback/message is preserved for debugging.
+    if last_error is not None:
+        raise ValueError(f"Unable to read normalized CSV: {path}") from last_error
+    # No decoding error occurred — let the caller know we couldn't read for an
+    # unexpected reason (e.g. empty file). Use a generic ValueError.
     raise ValueError(f"Unable to read normalized CSV: {path}")
 
 
 # ---------------------------------------------------------------------------
 # Numeric/value helpers
 # ---------------------------------------------------------------------------
+
 
 def _is_positive_number(raw: str | None) -> bool:
     """Return True when *raw* is a non-empty string that represents a number > 0."""
@@ -183,6 +198,7 @@ def _is_non_empty(raw: str | None) -> bool:
 # ---------------------------------------------------------------------------
 # Master structural filter
 # ---------------------------------------------------------------------------
+
 
 def _apply_master_filter(
     rows: list[dict[str, Any]],
@@ -237,7 +253,7 @@ def _apply_master_filter(
 
     for row in rows:
         raw_ticker = (row.get(col_ticker) or "").strip().upper()
-        if not raw_ticker or " " in raw_ticker or len(raw_ticker) > 20:
+        if not raw_ticker or " " in raw_ticker or len(raw_ticker) > MAX_TICKER_LENGTH:
             continue  # noise / footer rows
 
         # Rule 1 – Segmento == "CASH"
@@ -295,6 +311,7 @@ def _apply_master_filter(
 # Auxiliary operational filter
 # ---------------------------------------------------------------------------
 
+
 def _apply_negocios_filter(
     rows: list[dict[str, Any]],
     col_index: dict[str, str],
@@ -326,7 +343,7 @@ def _apply_negocios_filter(
 
     for row in rows:
         raw_ticker = (row.get(col_ticker) or "").strip().upper()
-        if not raw_ticker or " " in raw_ticker or len(raw_ticker) > 20:
+        if not raw_ticker or " " in raw_ticker or len(raw_ticker) > MAX_TICKER_LENGTH:
             continue
 
         # Filter: Quantidade de negócios > 0

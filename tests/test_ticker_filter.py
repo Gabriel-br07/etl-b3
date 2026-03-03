@@ -28,6 +28,7 @@ from app.etl.ingestion.ticker_filter import (
     _parse_date,
     build_ticker_filter,
 )
+from app.etl.ingestion.autodiscover import _find_negocios_sibling
 
 # ---------------------------------------------------------------------------
 # Fixture paths
@@ -550,9 +551,7 @@ def test_build_ticker_filter_no_spaces_in_tickers():
 # _find_negocios_sibling  (auto-discovery used by run_b3_quote_batch.py)
 # ---------------------------------------------------------------------------
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from run_b3_quote_batch import _find_negocios_sibling
+from app.etl.ingestion.autodiscover import _find_negocios_sibling
 
 
 def test_find_negocios_sibling_exact_date_match(tmp_path):
