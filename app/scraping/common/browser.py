@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from typing import Generator, Any, cast
+from typing import Generator
 
 from playwright.sync_api import (
     BrowserContext,
@@ -73,16 +73,12 @@ def build_browser_context(
     browser_type: BrowserType = playwright.chromium
     browser = browser_type.launch(headless=_headless, slow_mo=float(_slow_mo))
     try:
-        # Ensure Playwright writes downloads into the configured directory
-        # instead of the system temp directory by providing downloads_path.
-        # Some Playwright stubs used by static checkers may not include the
-        # `downloads_path` parameter. Cast the browser to ``Any`` so we can
-        # pass the argument without static type errors while keeping the
-        # runtime behavior that ensures downloads are written to *_dl_dir*.
-        context = cast(Any, browser).new_context(
+        # `downloads_path` is NOT a valid parameter for new_context() in the
+        # Playwright Python API. Download destinations are set explicitly via
+        # download.save_as() in the scraper after capturing the download event.
+        context = browser.new_context(
             accept_downloads=True,
             viewport=ViewportSize(width=1280, height=900),
-            downloads_path=str(_dl_dir),
         )
 
         context.set_default_timeout(settings.playwright_timeout_ms)
