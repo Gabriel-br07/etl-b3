@@ -1,0 +1,48 @@
+# ── Python cache ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# ── Virtual environments ──────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Local data (large, not needed in image) ───────────────────────
+# Exclude the entire data/ tree: raw downloads, screenshots, traces and
+# sample fixtures are not required at runtime (they live on named volumes).
+data/
+
+# ── Dev/test artifacts ────────────────────────────────────────────
+tests/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# ── IDE / OS noise ───────────────────────────────────────────────
+.idea/
+.vscode/
+*.DS_Store
+Thumbs.db
+
+# ── Secrets — never bake .env into the image ─────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Build artifacts ───────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+
+# ── Git ───────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Docs that inflate the context ────────────────────────────────
+README.md
+
+# ── uv.lock IS included — needed for `uv sync --locked` ──────────
+# (do NOT add uv.lock here)
