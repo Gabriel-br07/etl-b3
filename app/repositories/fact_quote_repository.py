@@ -57,8 +57,7 @@ class FactQuoteRepository:
         # For INSERT ... ON CONFLICT DO NOTHING, rowcount is not reliably
         # available on all drivers.  We use rowcount when > 0, else 0.
         result = self.db.execute(stmt)
-        self.db.commit()
+        # Commit is handled by the caller (managed_session) to provide atomicity
         count = result.rowcount
         return count if count is not None and count >= 0 else 0
-
 

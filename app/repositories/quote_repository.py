@@ -84,5 +84,5 @@ class QuoteRepository:
             },
         )
         result = self.db.execute(stmt)
-        self.db.commit()
+        # Commit is handled by the caller (managed_session) to provide atomicity
         return result.rowcount

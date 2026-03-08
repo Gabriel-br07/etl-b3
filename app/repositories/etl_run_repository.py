@@ -11,7 +11,12 @@ from app.db.models import ETLRun
 
 
 class ETLRunRepository:
-    """Persist ETL execution audit records."""
+    """Persist ETL execution audit records.
+
+    Note: this repository no longer commits the session. The caller (for
+    example `managed_session`) is responsible for committing or rolling back
+    to provide atomicity across multiple repository calls.
+    """
 
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -23,7 +28,10 @@ class ETLRunRepository:
         source_file: str | None = None,
         source_date: date | None = None,
     ) -> ETLRun:
-        """Create and persist an ETL run record with RUNNING status."""
+        """Create and persist an ETL run record with RUNNING status.
+
+        The caller must commit the session to persist the row to the DB.
+        """
         run = ETLRun(
             pipeline_name=pipeline_name,
             flow_name=pipeline_name,  # kept for backward compat
@@ -33,8 +41,7 @@ class ETLRunRepository:
             source_date=source_date,
         )
         self.db.add(run)
-        self.db.commit()
-        self.db.refresh(run)
+        # Caller commits to allow atomic ETL transactions
         return run
 
     def finish_run(
@@ -46,7 +53,10 @@ class ETLRunRepository:
         rows_inserted: int | None = None,
         rows_failed: int | None = None,
     ) -> ETLRun:
-        """Update a run record with final status, timing, and row counts."""
+        """Update a run record with final status, timing, and row counts.
+
+        The caller must commit the session to persist the changes.
+        """
         run.status = status
         run.finished_at = datetime.now(tz=timezone.utc)
         run.message = message
@@ -54,6 +64,4 @@ class ETLRunRepository:
             run.rows_inserted = rows_inserted
         if rows_failed is not None:
             run.rows_failed = rows_failed
-        self.db.commit()
-        self.db.refresh(run)
         return run
