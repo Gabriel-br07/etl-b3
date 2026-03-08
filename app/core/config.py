@@ -16,8 +16,11 @@ class Settings(BaseSettings):
     # Application
     app_env: str = "development"
 
-    # Database
+    # Database — override with DATABASE_URL env var in Docker
     database_url: str = "postgresql://etlb3:etlb3pass@localhost:5432/etlb3"
+    # db_pool settings
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
 
     # B3 data directory (local fallback mode)
     b3_data_dir: str = "data/sample"
