@@ -132,7 +132,12 @@ def resolve_instruments_csv(
                 raw_root = getattr(settings, "b3_output_dir", None) or getattr(
                     settings, "b3_data_dir", None
                 )
-            except Exception:
+            except (ImportError, ModuleNotFoundError) as exc:
+                log.warning(
+                    "Failed to import app.core.config.settings; "
+                    "falling back to default raw data directory: %s",
+                    exc,
+                )
                 raw_root = None
 
         if not raw_root:

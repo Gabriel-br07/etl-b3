@@ -80,10 +80,56 @@ def upgrade() -> None:
     )
     op.create_index("ix_fact_quotes_ticker_quoted_at", "fact_quotes", ["ticker", "quoted_at"])
     op.create_index("ix_fact_quotes_trade_date", "fact_quotes", ["trade_date"])
-    # Ensure TimescaleDB extension is available before creating hypertable
-    op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
+    # Attempt to enable TimescaleDB and create hypertable only when available/allowed.
+    # This keeps migrations compatible with plain PostgreSQL and managed instances where
+    # CREATE EXTENSION is disallowed.
     op.execute(
-        "SELECT create_hypertable('fact_quotes', 'quoted_at', if_not_exists => TRUE, migrate_data => TRUE)"
+        """
+        DO $$
+        BEGIN
+            -- Only attempt to create the extension if it's available on this server.
+            IF EXISTS (
+                SELECT 1
+                FROM pg_available_extensions
+                WHERE name = 'timescaledb'
+            ) THEN
+                BEGIN
+                    CREATE EXTENSION IF NOT EXISTS timescaledb;
+                EXCEPTION
+                    WHEN insufficient_privilege THEN
+                        -- Ignore lack of privilege; run without TimescaleDB.
+                        NULL;
+                END;
+            END IF;
+        END
+        $$;
+        """
+    )
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            -- Only create hypertable if TimescaleDB is installed and create_hypertable is available.
+            IF EXISTS (
+                   SELECT 1
+                   FROM pg_extension
+                   WHERE extname = 'timescaledb'
+               )
+               AND EXISTS (
+                   SELECT 1
+                   FROM pg_proc
+                   WHERE proname = 'create_hypertable'
+               ) THEN
+                PERFORM create_hypertable(
+                    'fact_quotes',
+                    'quoted_at',
+                    if_not_exists => TRUE,
+                    migrate_data  => TRUE
+                );
+            END IF;
+        END
+        $$;
+        """
     )
     # 5. Extend etl_runs
     op.add_column("etl_runs", sa.Column("pipeline_name", sa.String(100), nullable=True))
