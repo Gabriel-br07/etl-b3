@@ -77,6 +77,10 @@ def parse_jsonl_quotes(path: Path | str) -> list[dict]:
     path = Path(path)
     rows: list[dict] = []
     source_name = path.name
+    # Track distinct tickers encountered so we can report the correct
+    # number of tickers (previously the log printed the price-point count
+    # twice).
+    tickers: set[str] = set()
     skipped = 0
 
     logger.info("Parsing JSONL quotes file: %s", path)
@@ -98,6 +102,9 @@ def parse_jsonl_quotes(path: Path | str) -> list[dict]:
                 logger.debug("JSONL line %d: missing ticker – skipped", lineno)
                 skipped += 1
                 continue
+
+            # Record this ticker for final reporting
+            tickers.add(ticker)
 
             trade_date_raw = record.get("trade_date")
             try:
@@ -138,9 +145,10 @@ def parse_jsonl_quotes(path: Path | str) -> list[dict]:
                 })
 
     total = len(rows)
+    total_tickers = len(tickers)
     logger.info(
-        "JSONL parsed: %d price points across ~%d tickers (%d lines skipped)",
-        total, total, skipped,
+        "JSONL parsed: %d price points across %d tickers (%d lines skipped)",
+        total, total_tickers, skipped,
     )
     return rows
 
