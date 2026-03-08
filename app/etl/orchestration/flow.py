@@ -24,7 +24,8 @@ from app.core.constants import ETLStatus, SourceMode
 from app.db.engine import SessionLocal
 from app.etl.ingestion.local_adapter import LocalFileAdapter
 from app.etl.ingestion.remote_adapter import RemoteAdapter
-from app.etl.loaders.db_loader import load_assets, load_quotes
+from app.etl.loaders.db_loader import load_assets, load_daily_quotes as load_quotes
+
 from app.etl.parsers.instruments_parser import parse_instruments_csv
 from app.etl.parsers.trades_parser import parse_trades_file
 from app.etl.transforms.b3_transforms import transform_instruments, transform_trades
@@ -118,7 +119,7 @@ def run_daily_b3_etl(
     started_at = datetime.now(tz=timezone.utc)
     db = SessionLocal()
     etl_repo = ETLRunRepository(db)
-    run = etl_repo.start_run("run_daily_b3_etl")
+    run = etl_repo.start_run("run_daily_b3_etl", source_date=target_date)
 
     try:
         instruments_path = resolve_instruments(source_mode, target_date)
@@ -139,7 +140,7 @@ def run_daily_b3_etl(
             "quotes_upserted": quotes_count,
             "source_mode": source_mode,
         }
-        etl_repo.finish_run(run, ETLStatus.SUCCESS, str(summary))
+        etl_repo.finish_run(run, ETLStatus.SUCCESS, str(summary), rows_inserted=assets_count + quotes_count)
         logger.info("ETL completed: %s", summary)
         return summary
 
