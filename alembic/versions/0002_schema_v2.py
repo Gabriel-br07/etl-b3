@@ -27,7 +27,29 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_fact_daily_quotes_asset_id", "fact_daily_quotes", ["asset_id"])
-    op.create_index("ix_fact_daily_quotes_trade_date_idx", "fact_daily_quotes", ["trade_date"])
+    # Create index on trade_date only if an equivalent index doesn't already exist (avoid duplicates)
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_indexes
+                WHERE tablename = 'fact_daily_quotes'
+                  AND (
+                      indexname IN (
+                          'ix_fact_daily_quotes_trade_date_idx',
+                          'ix_fact_daily_quotes_trade_date'
+                      )
+                      OR indexdef ILIKE '%(trade_date)%'
+                  )
+            ) THEN
+                CREATE INDEX ix_fact_daily_quotes_trade_date_idx ON fact_daily_quotes (trade_date);
+            END IF;
+        END
+        $$;
+        """
+    )
     # 3. Create fact_daily_trades (asset_id is a plain BigInteger, no FK constraint)
     op.create_table(
         "fact_daily_trades",
@@ -141,6 +163,7 @@ def upgrade() -> None:
     op.alter_column("etl_runs", "pipeline_name", nullable=False)
     op.create_index("ix_etl_runs_pipeline_started", "etl_runs", ["pipeline_name", "started_at"])
     op.create_index("ix_etl_runs_status", "etl_runs", ["status"])
+
 def downgrade() -> None:
     op.drop_index("ix_etl_runs_status", table_name="etl_runs")
     op.drop_index("ix_etl_runs_pipeline_started", table_name="etl_runs")
@@ -149,7 +172,17 @@ def downgrade() -> None:
     op.drop_column("etl_runs", "rows_failed")
     op.drop_column("etl_runs", "rows_inserted")
     op.drop_column("etl_runs", "pipeline_name")
-    op.drop_index("ix_fact_quotes_trade_date", table_name="fact_quotes")
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'ix_fact_quotes_trade_date') THEN
+                DROP INDEX ix_fact_quotes_trade_date;
+            END IF;
+        END
+        $$;
+        """
+    )
     op.drop_index("ix_fact_quotes_ticker_quoted_at", table_name="fact_quotes")
     op.drop_table("fact_quotes")
     op.drop_index("ix_fact_daily_trades_ticker_date", table_name="fact_daily_trades")

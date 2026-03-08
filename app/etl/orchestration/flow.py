@@ -79,7 +79,13 @@ def transform_trades_task(df: pl.DataFrame, file_name: str) -> list[dict]:
 def load_assets_task(rows: list[dict]) -> int:
     db = SessionLocal()
     try:
-        return load_assets(db, rows)
+        total = load_assets(db, rows)
+        # Persist the upserts performed by the repositories used in load_assets
+        db.commit()
+        return total
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -88,7 +94,13 @@ def load_assets_task(rows: list[dict]) -> int:
 def load_quotes_task(rows: list[dict]) -> int:
     db = SessionLocal()
     try:
-        return load_quotes(db, rows)
+        total = load_quotes(db, rows)
+        # Persist the upserts performed by the repositories used in load_quotes
+        db.commit()
+        return total
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -121,6 +133,15 @@ def run_daily_b3_etl(
     etl_repo = ETLRunRepository(db)
     run = etl_repo.start_run("run_daily_b3_etl", source_date=target_date)
 
+    # Persist the started run immediately so there is an audit record even if
+    # subsequent steps fail.
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        db.close()
+        raise
+
     try:
         instruments_path = resolve_instruments(source_mode, target_date)
         trades_path = resolve_trades(source_mode, target_date)
@@ -141,11 +162,25 @@ def run_daily_b3_etl(
             "source_mode": source_mode,
         }
         etl_repo.finish_run(run, ETLStatus.SUCCESS, str(summary), rows_inserted=assets_count + quotes_count)
+
+        # Persist final status and counts
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
         logger.info("ETL completed: %s", summary)
         return summary
 
     except Exception as exc:  # noqa: BLE001
-        etl_repo.finish_run(run, ETLStatus.FAILED, str(exc))
+        # Record failure and persist the audit record
+        try:
+            etl_repo.finish_run(run, ETLStatus.FAILED, str(exc))
+            db.commit()
+        except Exception:
+            # If committing the failure status itself fails, ensure rollback
+            db.rollback()
         logger.error("ETL failed: %s", exc)
         raise
     finally:
