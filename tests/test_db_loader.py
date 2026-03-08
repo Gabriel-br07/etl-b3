@@ -1,4 +1,4 @@
-﻿"""Unit tests for the ETL db_loader module (no real DB needed - mocks repos)."""
+"""Unit tests for the ETL db_loader module (no real DB needed - mocks repos)."""
 from __future__ import annotations
 from unittest.mock import MagicMock, patch
 import pytest

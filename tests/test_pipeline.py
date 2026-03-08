@@ -1,4 +1,4 @@
-﻿"""Tests for standalone ETL pipeline functions.
+"""Tests for standalone ETL pipeline functions.
 Uses mocking so no real DB connection is needed.
 """
 from __future__ import annotations

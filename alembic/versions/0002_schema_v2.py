@@ -82,6 +82,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_fact_quotes_ticker_quoted_at", "fact_quotes", ["ticker", "quoted_at"])
     op.create_index("ix_fact_quotes_trade_date", "fact_quotes", ["trade_date"])
+    # Ensure TimescaleDB extension is available before creating hypertable
+    op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
     op.execute(
         "SELECT create_hypertable('fact_quotes', 'quoted_at', if_not_exists => TRUE, migrate_data => TRUE)"
     )

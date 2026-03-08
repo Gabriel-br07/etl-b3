@@ -28,8 +28,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-
 
 def _parse_decimal(value: str | None) -> Decimal | None:
     """Convert a string to Decimal, handling comma decimal separators."""
