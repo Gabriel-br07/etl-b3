@@ -104,6 +104,8 @@ API layer (FastAPI): /assets, /quotes, /etl endpoints
 | `B3_DATA_DIR` | `/app/data/raw` | Root raw-data directory |
 | `LOG_LEVEL` | `INFO` | Python logging level |
 | `PLAYWRIGHT_HEADLESS` | `true` | Run browser headless |
+| `DB_POOL_SIZE` | `5` | SQLAlchemy engine pool size: number of persistent DB connections to keep in the pool. Tune upward for higher concurrency/workers. |
+| `DB_MAX_OVERFLOW` | `10` | SQLAlchemy engine max overflow: number of additional connections to open beyond `DB_POOL_SIZE` when demand spikes. Set to 0 to prevent overflow. |
 
 Copy `.env.example` to `.env` for local development (see below).
 
