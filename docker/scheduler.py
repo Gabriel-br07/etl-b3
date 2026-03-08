@@ -80,7 +80,7 @@ from app.etl.orchestration.csv_resolver import (
     ensure_data_dirs as resolver_ensure_data_dirs,
     CSVNotFoundError,
 )
-
+from app.core.constants import ETLStatus
 
 # ---------------------------------------------------------------------------
 # DB startup helpers
@@ -185,7 +185,7 @@ def load_instruments_and_trades(csv_path: Path) -> bool:
     try:
         from app.etl.orchestration.pipeline import run_instruments_and_trades_pipeline
         result = run_instruments_and_trades_pipeline(csv_path, trades_path, target_date)
-        if result.get("status") == "success":
+        if result.get("status") == ETLStatus.SUCCESS:
             log.info(
                 "[scheduler] DB load ok  assets=%d  trades=%d",
                 result.get("assets_upserted", 0),
@@ -220,7 +220,7 @@ def load_latest_jsonl(reference_date: date) -> bool:
     try:
         from app.etl.orchestration.pipeline import run_intraday_quotes_pipeline
         result = run_intraday_quotes_pipeline(jsonl_path)
-        if result.get("status") == "success":
+        if result.get("status") == ETLStatus.SUCCESS:
             log.info(
                 "[scheduler] intraday quotes loaded  rows=%d  file=%s",
                 result.get("rows_inserted", 0), result.get("source_file"),
