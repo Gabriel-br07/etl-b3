@@ -47,10 +47,32 @@ mkdir -p \
     "${VOLUME_ROOT}/traces/e2e"
 current_owner="$(stat -c '%u:%g' "${VOLUME_ROOT}" 2>/dev/null || echo '')"
 if [ "${current_owner}" != "1001:1001" ]; then
-    echo "[entrypoint] fixing ownership for ${VOLUME_ROOT} (current ${current_owner:-unknown} != 1001:1001)"
-    chown -R 1001:1001 "${VOLUME_ROOT}"
+    echo "[entrypoint] fixing ownership for ${VOLUME_ROOT} itself (current ${current_owner:-unknown} != 1001:1001)"
+    chown 1001:1001 "${VOLUME_ROOT}"
 fi
 
+# Only recursively fix ownership on known subpaths we create/use to avoid
+# O(volume_size) work on every container start.
+paths_to_fix="
+${DATA_DIR}
+${DATA_DIR}/b3
+${DATA_DIR}/b3/boletim_diario
+${DATA_DIR}/b3/daily_fluctuation_history
+${VOLUME_ROOT}/screenshots
+${VOLUME_ROOT}/screenshots/b3
+${VOLUME_ROOT}/traces
+${VOLUME_ROOT}/traces/e2e
+"
+
+for p in $paths_to_fix; do
+    if [ -e "$p" ]; then
+        dir_owner="$(stat -c '%u:%g' "$p" 2>/dev/null || echo '')"
+        if [ "$dir_owner" != "1001:1001" ]; then
+            echo "[entrypoint] fixing ownership for $p (current ${dir_owner:-unknown} != 1001:1001)"
+            chown -R 1001:1001 "$p"
+        fi
+    fi
+done
 # ---------------------------------------------------------------------------
 # Prefect home directory
 # ---------------------------------------------------------------------------

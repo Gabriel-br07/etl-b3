@@ -58,7 +58,7 @@ services:
       # Logging
       LOG_LEVEL: INFO
     # Shared memory — Chromium needs at least 256 MB; 1 GB is safe
-    ipc: host
+
     shm_size: "1gb"
     volumes:
       - scraper_data:/app/data

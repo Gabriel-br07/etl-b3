@@ -506,12 +506,8 @@ def test_route_snapshot_404(api_client):
 
     assert resp.status_code == 404
     detail = resp.json()["detail"]
-    if isinstance(detail, dict):
-        assert detail.get("ticker") == "XXXXXX"
-    else:
-        assert "XXXXXX" in detail
-
-
+    assert isinstance(detail, dict)
+    assert detail.get("ticker") == "XXXXXX"
 def test_route_snapshot_503_temporary_block(api_client):
     with patch(
         "app.api.quotes.get_daily_fluctuation",
@@ -890,10 +886,8 @@ def test_route_latest_snapshot_404(api_client):
 
     assert resp.status_code == 404
     detail = resp.json()["detail"]
-    if isinstance(detail, dict):
-        assert detail.get("ticker") == "XXXXXX"
-    else:
-        assert "XXXXXX" in detail
+    assert isinstance(detail, dict)
+    assert detail.get("ticker") == "XXXXXX"
 
 
 def test_route_latest_snapshot_503(api_client):
@@ -1428,10 +1422,8 @@ def test_route_intraday_series_404(api_client):
 
     assert resp.status_code == 404
     detail = resp.json()["detail"]
-    if isinstance(detail, dict):
-        assert detail.get("ticker") == "XXXXXX"
-    else:
-        assert "XXXXXX" in detail
+    assert isinstance(detail, dict)
+    assert detail.get("ticker") == "XXXXXX"
 
 
 def test_route_intraday_series_503(api_client):
