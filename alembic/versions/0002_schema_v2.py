@@ -190,7 +190,7 @@ def downgrade() -> None:
     op.drop_index("ix_fact_daily_trades_ticker", table_name="fact_daily_trades")
     op.drop_index("ix_fact_daily_trades_asset_id", table_name="fact_daily_trades")
     op.drop_table("fact_daily_trades")
-    op.drop_index("ix_fact_daily_quotes_trade_date_idx", table_name="fact_daily_quotes")
+    op.execute("DROP INDEX IF EXISTS ix_fact_daily_quotes_trade_date_idx;")
     op.drop_index("ix_fact_daily_quotes_asset_id", table_name="fact_daily_quotes")
     op.drop_column("fact_daily_quotes", "asset_id")
     op.drop_column("dim_assets", "is_active")
