@@ -67,14 +67,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.logging import configure_logging, get_logger
+from app.etl.orchestration.csv_resolver import CSVNotFoundError, resolve_instruments_csv
 from app.use_cases.quotes.batch_ingestion import run_batch_quote_ingestion
 
 logger = get_logger(__name__)
 
-_DEFAULT_INSTRUMENTS_CSV = (
-    "data/raw/b3/boletim_diario/2026-02-26/"
-    "cadastro_instrumentos_20260226.normalized.csv"
-)
+# None → auto-discovery via csv_resolver (today → yesterday fallback + retry).
+# Pass an explicit path with --instruments to skip auto-discovery.
+_DEFAULT_INSTRUMENTS_CSV: str | None = None
 
 # ---------------------------------------------------------------------------
 # Auto-discovery helper
@@ -133,7 +133,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Path to the normalized instruments CSV "
             "(cadastro_instrumentos_*.normalized.csv). "
-            f"Default: {_DEFAULT_INSTRUMENTS_CSV}"
+            "When omitted, auto-discovery runs: today → yesterday fallback with retry."
         ),
     )
     parser.add_argument(
@@ -189,10 +189,22 @@ def main() -> None:
     configure_logging()
     args = parse_args()
 
-    instruments_path = Path(args.instruments)
-    if not instruments_path.exists():
-        logger.error("Instruments CSV not found: '%s'", instruments_path)
-        sys.exit(1)
+    # ------------------------------------------------------------------
+    # Resolve instruments CSV: explicit path > auto-discovery with retry
+    # ------------------------------------------------------------------
+    if args.instruments:
+        instruments_path = Path(args.instruments)
+        if not instruments_path.exists():
+            logger.error("Instruments CSV not found: '%s'", instruments_path)
+            sys.exit(1)
+        logger.info("[etl_pipeline] Using explicit instruments CSV: '%s'", instruments_path)
+    else:
+        logger.info("[etl_pipeline] No --instruments supplied — running auto-discovery…")
+        try:
+            instruments_path = resolve_instruments_csv()
+        except CSVNotFoundError as exc:
+            logger.error("[etl_pipeline] %s", exc)
+            sys.exit(1)
 
     # ------------------------------------------------------------------
     # Resolve trades CSV: explicit > auto-discovered > disabled
