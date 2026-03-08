@@ -54,6 +54,7 @@ def run_instruments_and_trades_pipeline(
         target_date, instruments_csv, trades_file,
     )
 
+    summary: dict
     with managed_session() as db:
         etl_repo = ETLRunRepository(db)
         run = etl_repo.start_run(
@@ -96,24 +97,47 @@ def run_instruments_and_trades_pipeline(
                 "status": ETLStatus.SUCCESS,
             }
             logger.info("[etl_pipeline] instruments+trades load done: %s", summary)
-            return summary
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - we intentionally handle exceptions here
             logger.exception("[etl_pipeline] instruments+trades load FAILED: %s", exc)
-            etl_repo.finish_run(
-                run,
-                ETLStatus.FAILED,
-                message=str(exc),
-                rows_inserted=assets_upserted + trades_upserted,
-                rows_failed=1,
-            )
-            return {
+
+            # Ensure any partial work is rolled back before persisting the failure audit
+            try:
+                db.rollback()
+            except Exception:
+                # best-effort rollback; continue to try to persist failure
+                pass
+
+            # Record the failed run and persist that audit row in the same session.
+            try:
+                etl_repo.finish_run(
+                    run,
+                    ETLStatus.FAILED,
+                    message=str(exc),
+                    rows_inserted=assets_upserted + trades_upserted,
+                    rows_failed=1,
+                )
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            except Exception:
+                # If recording the failure itself fails, ensure rollback and let the
+                # caller know by returning a failure summary containing the error.
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
+            summary = {
                 "target_date": str(target_date),
                 "assets_upserted": assets_upserted,
                 "trades_upserted": trades_upserted,
                 "status": ETLStatus.FAILED,
                 "error": str(exc),
             }
+
+    return summary
 
 
 def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
@@ -127,6 +151,7 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
     """
     logger.info("[etl_pipeline] starting intraday quotes load  jsonl=%s", jsonl_path)
 
+    summary: dict
     with managed_session() as db:
         etl_repo = ETLRunRepository(db)
         run = etl_repo.start_run(
@@ -152,20 +177,40 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
                 "status": ETLStatus.SUCCESS,
             }
             logger.info("[etl_pipeline] intraday quotes load done: %s", summary)
-            return summary
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - intentional handling
             logger.exception("[etl_pipeline] intraday quotes load FAILED: %s", exc)
-            etl_repo.finish_run(
-                run,
-                ETLStatus.FAILED,
-                message=str(exc),
-                rows_inserted=rows_inserted,
-                rows_failed=1,
-            )
-            return {
+
+            # Rollback partial work before recording failure
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+            try:
+                etl_repo.finish_run(
+                    run,
+                    ETLStatus.FAILED,
+                    message=str(exc),
+                    rows_inserted=rows_inserted,
+                    rows_failed=1,
+                )
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
+            summary = {
                 "source_file": jsonl_path.name,
                 "rows_inserted": rows_inserted,
                 "status": ETLStatus.FAILED,
                 "error": str(exc),
             }
+
+    return summary
+
