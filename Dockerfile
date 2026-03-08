@@ -28,7 +28,7 @@ FROM python:3.13-slim
 #   tzdata            — timezone database (America/Sao_Paulo)
 #   gcc / build-essential / python3-dev — C extensions for some deps
 #   libpq-dev         — PostgreSQL client headers (psycopg2)
-#   util-linux        — flock, used in run_daily_batch.sh
+#   util-linux        — setpriv, used in docker/entrypoint.sh
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \

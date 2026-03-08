@@ -120,8 +120,16 @@ def resolve_instruments_csv(
     """
     if data_dir is None:
         import os
-        data_dir = Path(os.environ.get("B3_DATA_DIR", "/app/data/raw"))
-    data_dir = Path(data_dir)
+        # Prefer scraper output directory, then fallback/sample directory,
+        # then the documented default (/app/data/raw).
+        raw_root = (
+            os.environ.get("B3_OUTPUT_DIR")
+            or os.environ.get("B3_DATA_DIR")
+            or "/app/data/raw"
+        )
+        data_dir = Path(raw_root)
+    else:
+        data_dir = Path(data_dir)
 
     today = date.today()
     yesterday = today - timedelta(days=1)

@@ -42,7 +42,7 @@ build/
 .gitignore
 
 # ── Docs that inflate the context ────────────────────────────────
-README.md
+
 
 # ── uv.lock IS included — needed for `uv sync --locked` ──────────
 # (do NOT add uv.lock here)

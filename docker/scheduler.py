@@ -43,7 +43,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s [scheduler] %(levelname)s %(message)s",
+    format="%(asctime)s %(levelname)s %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
     stream=sys.stdout,
     force=True,
