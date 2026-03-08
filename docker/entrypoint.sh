@@ -22,7 +22,17 @@ set -e
 # Paths
 # ---------------------------------------------------------------------------
 DATA_DIR="${B3_DATA_DIR:-/app/data/raw}"
-VOLUME_ROOT="${DATA_DIR%/raw}"          # /app/data
+# Normalize DATA_DIR (strip trailing slash) and ensure it points to a /raw directory
+DATA_DIR=${DATA_DIR%/}
+case "$DATA_DIR" in
+    */raw)
+        VOLUME_ROOT=$(dirname "$DATA_DIR")  # e.g. /app/data
+        ;;
+    *)
+        echo "[entrypoint] ERROR: B3_DATA_DIR ('${DATA_DIR}') must point to a '.../raw' directory." >&2
+        exit 1
+        ;;
+esac
 SCRAPER_HOME="/home/scraper"
 PREFECT_DIR="${SCRAPER_HOME}/.prefect"
 
@@ -35,7 +45,11 @@ mkdir -p \
     "${DATA_DIR}/b3/daily_fluctuation_history" \
     "${VOLUME_ROOT}/screenshots/b3" \
     "${VOLUME_ROOT}/traces/e2e"
-chown -R 1001:1001 "${VOLUME_ROOT}"
+current_owner="$(stat -c '%u:%g' "${VOLUME_ROOT}" 2>/dev/null || echo '')"
+if [ "${current_owner}" != "1001:1001" ]; then
+    echo "[entrypoint] fixing ownership for ${VOLUME_ROOT} (current ${current_owner:-unknown} != 1001:1001)"
+    chown -R 1001:1001 "${VOLUME_ROOT}"
+fi
 
 # ---------------------------------------------------------------------------
 # Prefect home directory
