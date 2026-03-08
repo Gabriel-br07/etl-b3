@@ -27,6 +27,10 @@ _DATE_ARG=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --date)
+            if [ "$#" -lt 2 ]; then
+                echo "Usage: $0 [--date YYYY-MM-DD]" >&2
+                exit 1
+            fi
             _DATE_ARG="$2"
             shift 2
             ;;

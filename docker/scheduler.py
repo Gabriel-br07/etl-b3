@@ -60,7 +60,7 @@ RETRY_COUNT: int      = int(os.environ.get("RETRY_COUNT", "3"))
 RETRY_DELAY: int      = int(os.environ.get("RETRY_DELAY_SECONDS", "60"))
 SCRAPER_INTERVAL: int = int(os.environ.get("SCRAPER_INTERVAL_SECONDS", "1500"))
 
-BOLETIM_DIR: Path = B3_DATA_DIR / "b3" / "boletim_diario"
+
 PYTHON:       str = "/app/.venv/bin/python"
 DAILY_BATCH:  str = "/app/docker/run_daily_batch.sh"
 QUOTE_SCRIPT: str = "/app/scripts/run_b3_quote_batch.py"
@@ -240,16 +240,6 @@ def main() -> None:
         # ------------------------------------------------------------------
         log.info("[scheduler] starting 25m loop")
         while True:
-            # Refresh date in case we crossed midnight
-            current_today = date.today()
-
-            # Break out of quote loop if a new day has started (daily run needed)
-            if current_today != today:
-                log.info(
-                    "[scheduler] new day detected (%s) — returning to daily phase",
-                    current_today,
-                )
-                break
 
             # Break out if the next daily run window is approaching
             secs_to_run = seconds_until(DAILY_RUN_HOUR, DAILY_RUN_MINUTE)
