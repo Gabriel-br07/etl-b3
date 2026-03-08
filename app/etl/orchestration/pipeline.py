@@ -127,45 +127,66 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
     """
     logger.info("[etl_pipeline] starting intraday quotes load  jsonl=%s", jsonl_path)
 
-    with managed_session() as db:
-        etl_repo = ETLRunRepository(db)
+    # Start the ETL run audit in its own transaction so it is not rolled back
+    # together with the data load if the ETL fails.
+    with managed_session() as audit_db:
+        etl_repo = ETLRunRepository(audit_db)
         run = etl_repo.start_run(
             "intraday_quotes",
             source_file=str(jsonl_path),
         )
 
-        rows_inserted = 0
-        try:
+    rows_inserted = 0
+
+    try:
+        # Run the actual data load in a separate transaction. Any exception
+        # raised here will cause this managed_session() to roll back.
+        with managed_session() as db:
             rows = parse_jsonl_quotes(jsonl_path)
             rows_inserted = load_intraday_quotes(db, rows)
 
-            etl_repo.finish_run(
-                run,
-                ETLStatus.SUCCESS,
-                rows_inserted=rows_inserted,
-                rows_failed=0,
+    except Exception as exc:
+        logger.exception("[etl_pipeline] intraday quotes load FAILED: %s", exc)
+
+        # Record the FAILED status in a separate transaction so the audit row
+        # is persisted even though the data transaction was rolled back.
+        try:
+            with managed_session() as audit_db:
+                etl_repo = ETLRunRepository(audit_db)
+                etl_repo.finish_run(
+                    run,
+                    ETLStatus.FAILED,
+                    message=str(exc),
+                    rows_inserted=rows_inserted,
+                    rows_failed=1,
+                )
+        except Exception:
+            # Avoid masking the original ETL failure if audit logging fails.
+            logger.exception(
+                "[etl_pipeline] intraday quotes load FAILED but could not record audit run"
             )
 
-            summary = {
-                "source_file": jsonl_path.name,
-                "rows_inserted": rows_inserted,
-                "status": ETLStatus.SUCCESS,
-            }
-            logger.info("[etl_pipeline] intraday quotes load done: %s", summary)
-            return summary
+        return {
+            "source_file": jsonl_path.name,
+            "rows_inserted": rows_inserted,
+            "status": ETLStatus.FAILED,
+            "error": str(exc),
+        }
 
-        except Exception as exc:
-            logger.exception("[etl_pipeline] intraday quotes load FAILED: %s", exc)
-            etl_repo.finish_run(
-                run,
-                ETLStatus.FAILED,
-                message=str(exc),
-                rows_inserted=rows_inserted,
-                rows_failed=1,
-            )
-            return {
-                "source_file": jsonl_path.name,
-                "rows_inserted": rows_inserted,
-                "status": ETLStatus.FAILED,
-                "error": str(exc),
-            }
+    # If we reach here, the data load transaction committed successfully.
+    with managed_session() as audit_db:
+        etl_repo = ETLRunRepository(audit_db)
+        etl_repo.finish_run(
+            run,
+            ETLStatus.SUCCESS,
+            rows_inserted=rows_inserted,
+            rows_failed=0,
+        )
+
+    summary = {
+        "source_file": jsonl_path.name,
+        "rows_inserted": rows_inserted,
+        "status": ETLStatus.SUCCESS,
+    }
+    logger.info("[etl_pipeline] intraday quotes load done: %s", summary)
+    return summary
