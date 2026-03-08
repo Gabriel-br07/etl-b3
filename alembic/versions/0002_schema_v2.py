@@ -17,26 +17,24 @@ def upgrade() -> None:
         "dim_assets",
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
     )
-    # 2. Add asset_id FK to fact_daily_quotes
+    # 2. Add asset_id column to fact_daily_quotes (soft FK: create plain BigInteger)
     op.add_column(
         "fact_daily_quotes",
         sa.Column(
             "asset_id",
             sa.BigInteger(),
-            sa.ForeignKey("dim_assets.id", ondelete="SET NULL"),
             nullable=True,
         ),
     )
     op.create_index("ix_fact_daily_quotes_asset_id", "fact_daily_quotes", ["asset_id"])
     op.create_index("ix_fact_daily_quotes_trade_date_idx", "fact_daily_quotes", ["trade_date"])
-    # 3. Create fact_daily_trades
+    # 3. Create fact_daily_trades (asset_id is a plain BigInteger, no FK constraint)
     op.create_table(
         "fact_daily_trades",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column(
             "asset_id",
             sa.BigInteger(),
-            sa.ForeignKey("dim_assets.id", ondelete="SET NULL"),
             nullable=True,
         ),
         sa.Column("ticker", sa.String(20), nullable=False),
