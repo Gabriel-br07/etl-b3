@@ -25,7 +25,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, foreign
 
 
 class Base(DeclarativeBase):
@@ -98,10 +98,10 @@ class FactDailyTrade(Base):
     # Keep an ORM relationship for convenience but explicitly declare the
     # foreign_keys argument since there is no DB-level ForeignKey to infer.
     asset: Mapped["DimAsset | None"] = relationship(
-        "DimAsset",
+        DimAsset,
         lazy="noload",
         foreign_keys=[asset_id],
-        primaryjoin="DimAsset.id == foreign(FactDailyTrade.asset_id)",
+        primaryjoin=DimAsset.id == foreign(asset_id),
     )
 
     __table_args__ = (
@@ -141,10 +141,10 @@ class FactDailyQuote(Base):
     )
 
     asset: Mapped["DimAsset | None"] = relationship(
-        "DimAsset",
+        DimAsset,
         lazy="noload",
         foreign_keys=[asset_id],
-        primaryjoin="DimAsset.id == foreign(FactDailyQuote.asset_id)",
+        primaryjoin=DimAsset.id == foreign(asset_id),
     )
 
     __table_args__ = (
