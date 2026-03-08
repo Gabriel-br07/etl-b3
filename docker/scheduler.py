@@ -102,74 +102,11 @@ def ensure_data_dirs() -> None:
 # CSV discovery
 # ---------------------------------------------------------------------------
 
-def _find_csv_for_date(target: date) -> Path | None:
-    """Return the normalized instruments CSV for *target*, or None."""
-    date_str     = target.isoformat()           # YYYY-MM-DD
-    date_compact = date_str.replace("-", "")    # YYYYMMDD
-    folder       = BOLETIM_DIR / date_str
-
-    # Prefer exact name
-    exact = folder / f"cadastro_instrumentos_{date_compact}.normalized.csv"
-    if exact.exists():
-        return exact
-
-    # Glob fallback — any normalized instruments file in the dated sub-folder
-    if folder.exists():
-        candidates = sorted(folder.glob("cadastro_instrumentos_*.normalized.csv"))
-        if candidates:
-            return candidates[-1]
-
-    return None
-
-
-def find_instruments_csv(
-    retry_count: int = RETRY_COUNT,
-    retry_delay: int = RETRY_DELAY,
-) -> Path | None:
-    """
-    Resolve the instruments CSV with retry + yesterday fallback.
-
-    Resolution order on each attempt:
-      1. today's CSV
-      2. yesterday's CSV
-
-    Returns the path, or None if not found after all retries (never raises).
-    """
-    today     = date.today()
-    yesterday = today - timedelta(days=1)
-
-    log.info(
-        "[scheduler] csv discovery  today=%s  yesterday=%s  retries=%d",
-        today, yesterday, retry_count,
-    )
-
-    for attempt in range(retry_count + 1):
-        if attempt > 0:
-            log.info(
-                "[scheduler] csv retry %d/%d — waiting %ds…",
-                attempt, retry_count, retry_delay,
-            )
-            time.sleep(retry_delay)
-
-        csv = _find_csv_for_date(today)
-        if csv:
-            log.info("[scheduler] csv found (today): %s", csv)
-            return csv
-
-        log.info("[scheduler] today csv missing (%s), trying yesterday fallback", today)
-
-        csv = _find_csv_for_date(yesterday)
-        if csv:
-            log.warning("[scheduler] today csv missing, using yesterday fallback: %s", csv)
-            return csv
-
-        log.info("[scheduler] yesterday csv missing too (%s)", yesterday)
-
-    log.error(
-        "[scheduler] csv not found after %d retries — checked %s and %s",
-        retry_count, BOLETIM_DIR / str(today), BOLETIM_DIR / str(yesterday),
-    )
-    return None
+from app.etl.orchestration.csv_resolver import (
+    resolve_instruments_csv,
+    ensure_data_dirs as resolver_ensure_data_dirs,
+    CSVNotFoundError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +165,7 @@ def run_quote_batch(instruments_csv: Path) -> bool:
 # Scheduler helpers
 # ---------------------------------------------------------------------------
 
+
 def seconds_until(hour: int, minute: int) -> int:
     """Seconds until the next occurrence of hour:minute (today or tomorrow)."""
     now    = datetime.now()
@@ -261,7 +199,13 @@ def main() -> None:
     log.info("  quote interval: %ds (%.0fmin)", SCRAPER_INTERVAL, SCRAPER_INTERVAL / 60)
     log.info("=" * 60)
 
-    ensure_data_dirs()
+    # Ensure directories via the shared resolver helper to avoid drift
+    try:
+        resolver_ensure_data_dirs(B3_DATA_DIR)
+    except PermissionError:
+        # Match previous behaviour: fatal and exit if we cannot create dirs
+        log.critical("[scheduler] fatal: cannot create data directories (PermissionError)")
+        sys.exit(1)
 
     while True:
         today  = date.today()
@@ -271,10 +215,25 @@ def main() -> None:
         # Phase 1 — Daily scrapers (once per calendar day)
         # ------------------------------------------------------------------
         if not marker.exists():
-            log.info(
-                "[scheduler] no marker for %s — running daily scrapers now", today
-            )
-            ok = run_daily_scrapers()
+            # New scheduling policy: we will run the daily scrapers at the configured
+            # DAILY_RUN_HOUR:DAILY_RUN_MINUTE. If the scheduler starts after that
+            # time and today's marker is missing, we consider the scheduled window
+            # missed and will run the scrapers immediately ("run-missed" policy).
+            # If the scheduler starts before the configured time, we wait until the
+            # scheduled time.
+            secs_to_run = seconds_until(DAILY_RUN_HOUR, DAILY_RUN_MINUTE)
+            now = datetime.now()
+            target_time = now.replace(hour=DAILY_RUN_HOUR, minute=DAILY_RUN_MINUTE, second=0, microsecond=0)
+
+            if target_time <= now:
+                # We're past the scheduled time for today — run immediately (missed window)
+                log.info("[scheduler] marker missing and scheduled time already passed — running missed daily scrapers now")
+                ok = run_daily_scrapers()
+            else:
+                # We're before the scheduled time — sleep until then
+                log.info("[scheduler] marker missing and scheduled time in %ds — sleeping until scheduled run", int(secs_to_run))
+                time.sleep(secs_to_run)
+                ok = run_daily_scrapers()
 
             if ok:
                 marker.parent.mkdir(parents=True, exist_ok=True)
@@ -290,11 +249,15 @@ def main() -> None:
             log.info("[scheduler] daily scrapers already ran today (%s)", today)
 
         # ------------------------------------------------------------------
-        # Phase 2 — Validate CSV
+        # Phase 2 — Validate CSV (use shared resolver)
         # ------------------------------------------------------------------
-        csv_path = find_instruments_csv()
-
-        if csv_path is None:
+        try:
+            csv_path = resolve_instruments_csv(
+                data_dir=B3_DATA_DIR,
+                retry_count=RETRY_COUNT,
+                retry_delay_seconds=RETRY_DELAY,
+            )
+        except CSVNotFoundError:
             secs = min(RETRY_DELAY, 120)
             log.warning(
                 "[scheduler] no instruments csv available — sleeping %ds before retry", secs
@@ -331,7 +294,15 @@ def main() -> None:
 
             # Refresh CSV path at the top of each cycle (protects against
             # yesterday-fallback becoming stale when a new day's CSV arrives)
-            fresh_csv = find_instruments_csv(retry_count=0)
+            try:
+                fresh_csv = resolve_instruments_csv(
+                    data_dir=B3_DATA_DIR,
+                    retry_count=0,
+                    retry_delay_seconds=0,
+                )
+            except CSVNotFoundError:
+                fresh_csv = None
+
             if fresh_csv:
                 csv_path = fresh_csv
 

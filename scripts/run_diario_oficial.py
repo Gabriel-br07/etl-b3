@@ -2,7 +2,7 @@
 """Orchestrator for Diário Oficial daily run.
 
 This wrapper delegates the data-collection work to the existing scripts in
-`/app/scripts` so the scheduled job (run_job.sh diario_oficial) runs all
+`/app/scripts` so the scheduled job (previously named run_job.sh) can run all
 required sub-scripts in sequence.
 
 It forwards the optional --date argument to each child script. If any child
