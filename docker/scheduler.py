@@ -67,38 +67,6 @@ QUOTE_SCRIPT: str = "/app/scripts/run_b3_quote_batch.py"
 
 
 # ---------------------------------------------------------------------------
-# Directory setup
-# ---------------------------------------------------------------------------
-
-def ensure_data_dirs() -> None:
-    """Create the full data directory tree.  Aborts on PermissionError."""
-    log.info("[scheduler] ensuring data dirs")
-    dirs = [
-        B3_DATA_DIR,
-        B3_DATA_DIR / "b3",
-        BOLETIM_DIR,
-        B3_DATA_DIR / "b3" / "daily_fluctuation_history",
-        B3_DATA_DIR.parent / "screenshots" / "b3",
-        B3_DATA_DIR.parent / "traces"      / "e2e",
-    ]
-    for d in dirs:
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            log.debug("dir ok: %s", d)
-        except PermissionError as exc:
-            # Hard abort — permission errors must be fixed at the infrastructure
-            # level (entrypoint.sh chown), not silently ignored here.
-            log.critical(
-                "[scheduler] FATAL: cannot create directory %s — %s\n"
-                "  This usually means the Docker volume root is owned by root.\n"
-                "  Fix: ensure entrypoint.sh runs as root before the scheduler.",
-                d, exc,
-            )
-            sys.exit(1)
-    log.info("[scheduler] data dirs ready  root=%s", B3_DATA_DIR)
-
-
-# ---------------------------------------------------------------------------
 # CSV discovery
 # ---------------------------------------------------------------------------
 
