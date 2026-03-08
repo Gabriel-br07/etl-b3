@@ -8,6 +8,9 @@ FastAPI routes:
 
 ETL / background code:
     from app.db.engine import managed_session
+    # managed_session is the single-commit authority for ETL batches.
+    # Repository methods MUST NOT call db.commit(); instead let the
+    # context manager commit once on successful exit to provide atomicity.
     with managed_session() as db:
         repo.upsert_many(rows)
 """
@@ -75,14 +78,21 @@ def wait_for_db(retries: int = 10, delay: float = 3.0) -> None:
 def managed_session() -> Generator[Session, None, None]:
     """Context manager that yields a Session and handles commit/rollback/close.
 
-    Use this in ETL code and background tasks instead of calling SessionLocal()
-    directly, so sessions are never leaked.
+    This context manager is the single-commit authority for ETL and background
+    code. Repository implementations used by ETL (for example
+    ``AssetRepository``, ``QuoteRepository``, etc.) MUST NOT call
+    ``db.commit()`` themselves. Instead, perform multiple repository calls
+    inside the same ``with managed_session():`` block and let this manager
+    commit once on successful exit — providing atomicity across the batch.
 
     Example::
 
         with managed_session() as db:
-            repo = AssetRepository(db)
-            repo.upsert_many(rows)
+            etl_repo = ETLRunRepository(db)
+            run = etl_repo.start_run(...)
+            asset_repo.upsert_many(rows)
+            trade_repo.upsert_many(rows)
+            etl_repo.finish_run(run, ...)
     """
     db: Session = SessionLocal()
     try:

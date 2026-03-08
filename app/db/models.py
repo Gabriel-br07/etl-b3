@@ -17,7 +17,6 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
-    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -61,14 +60,6 @@ class DimAsset(Base):
         nullable=False,
     )
 
-    # Relationships (lazy by default – optional, no FK on fact tables to avoid perf issues)
-    daily_trades: Mapped[list["FactDailyTrade"]] = relationship(
-        "FactDailyTrade", back_populates="asset", lazy="noload"
-    )
-    daily_quotes: Mapped[list["FactDailyQuote"]] = relationship(
-        "FactDailyQuote", back_populates="asset", lazy="noload"
-    )
-
 
 # ---------------------------------------------------------------------------
 # Fact tables
@@ -85,12 +76,10 @@ class FactDailyTrade(Base):
     __tablename__ = "fact_daily_trades"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    # Soft FK – not enforced at DB level to allow loading without pre-existing assets
-    asset_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey("dim_assets.id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    # Soft FK: plain BigInteger reference to dim_assets.id. Not enforced by the
+    # ORM/DB schema here — use an index for lookups. If you prefer a real
+    # FK constraint, restore ForeignKey("dim_assets.id", ondelete="SET NULL").
+    asset_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ticker: Mapped[str] = mapped_column(String(20), nullable=False)
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     open_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
@@ -106,8 +95,13 @@ class FactDailyTrade(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    # Keep an ORM relationship for convenience but explicitly declare the
+    # foreign_keys argument since there is no DB-level ForeignKey to infer.
     asset: Mapped["DimAsset | None"] = relationship(
-        "DimAsset", back_populates="daily_trades", lazy="noload"
+        "DimAsset",
+        lazy="noload",
+        foreign_keys=[asset_id],
+        primaryjoin="DimAsset.id == foreign(FactDailyTrade.asset_id)",
     )
 
     __table_args__ = (
@@ -123,17 +117,15 @@ class FactDailyQuote(Base):
     """Fact table for daily consolidated quotes (legacy / compatibility).
 
     Kept for backward compatibility with existing API endpoints and migrations.
-    New intraday data goes to FactQuote.
     """
 
     __tablename__ = "fact_daily_quotes"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    asset_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey("dim_assets.id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    # Soft FK: plain BigInteger reference to dim_assets.id. Not enforced by the
+    # ORM/DB schema here — use an index for lookups. If you prefer a real
+    # FK constraint, restore ForeignKey("dim_assets.id", ondelete="SET NULL").
+    asset_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ticker: Mapped[str] = mapped_column(String(20), nullable=False)
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     last_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
@@ -149,7 +141,10 @@ class FactDailyQuote(Base):
     )
 
     asset: Mapped["DimAsset | None"] = relationship(
-        "DimAsset", back_populates="daily_quotes", lazy="noload"
+        "DimAsset",
+        lazy="noload",
+        foreign_keys=[asset_id],
+        primaryjoin="DimAsset.id == foreign(FactDailyQuote.asset_id)",
     )
 
     __table_args__ = (
