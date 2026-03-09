@@ -55,18 +55,25 @@ def run_instruments_and_trades_pipeline(
         target_date, instruments_csv, trades_file,
     )
 
-    with managed_session() as db:
-        etl_repo = ETLRunRepository(db)
+    # Transaction 1: start ETL run audit and store run_id (so we don't pass
+    # ORM instances between sessions)
+    with managed_session() as audit_db:
+        etl_repo = ETLRunRepository(audit_db)
         run = etl_repo.start_run(
             "instruments_and_trades",
             source_file=str(instruments_csv),
             source_date=target_date,
         )
+        run_id = run.id
 
-        assets_upserted = 0
-        trades_upserted = 0
+    assets_upserted = 0
+    trades_upserted = 0
 
-        try:
+    # Transaction 2: perform the actual data load. Do NOT catch exceptions
+    # inside this managed_session() so that the session's context manager can
+    # rollback automatically on error.
+    try:
+        with managed_session() as db:
             # --- instruments ---
             instruments_df = parse_instruments_csv(instruments_csv)
             asset_rows = transform_instruments(instruments_df, target_date)
@@ -83,38 +90,67 @@ def run_instruments_and_trades_pipeline(
                     trades_file,
                 )
 
+    except Exception as exc:
+        # The data transaction was rolled back by managed_session(); now
+        # record the FAILED audit in its own transaction.
+        logger.exception("[etl_pipeline] instruments+trades load FAILED: %s", exc)
+        try:
+            with managed_session() as audit_db:
+                etl_repo = ETLRunRepository(audit_db)
+                run_obj = audit_db.get(ETLRun, run_id)
+                if run_obj is None:
+                    logger.warning(
+                        "[etl_pipeline] could not reload ETL run id=%s to record failure",
+                        run_id,
+                    )
+                else:
+                    etl_repo.finish_run(
+                        run_obj,
+                        ETLStatus.FAILED,
+                        message=str(exc),
+                        rows_inserted=assets_upserted + trades_upserted,
+                        rows_failed=1,
+                    )
+        except Exception:
+            # Avoid masking the original ETL failure if audit logging fails.
+            logger.exception(
+                "[etl_pipeline] instruments+trades load FAILED but could not record audit run"
+            )
+
+        return {
+            "target_date": str(target_date),
+            "assets_upserted": assets_upserted,
+            "trades_upserted": trades_upserted,
+            "status": ETLStatus.FAILED,
+            "error": str(exc),
+        }
+
+    # Transaction 3: data load committed successfully; record SUCCESS in a
+    # separate transaction.
+    with managed_session() as audit_db:
+        etl_repo = ETLRunRepository(audit_db)
+        run_obj = audit_db.get(ETLRun, run_id)
+        if run_obj is None:
+            logger.warning(
+                "[etl_pipeline] could not reload ETL run id=%s to record success",
+                run_id,
+            )
+        else:
             etl_repo.finish_run(
-                run,
+                run_obj,
                 ETLStatus.SUCCESS,
                 rows_inserted=assets_upserted + trades_upserted,
                 rows_failed=0,
             )
 
-            summary = {
-                "target_date": str(target_date),
-                "assets_upserted": assets_upserted,
-                "trades_upserted": trades_upserted,
-                "status": ETLStatus.SUCCESS,
-            }
-            logger.info("[etl_pipeline] instruments+trades load done: %s", summary)
-            return summary
-
-        except Exception as exc:
-            logger.exception("[etl_pipeline] instruments+trades load FAILED: %s", exc)
-            etl_repo.finish_run(
-                run,
-                ETLStatus.FAILED,
-                message=str(exc),
-                rows_inserted=assets_upserted + trades_upserted,
-                rows_failed=1,
-            )
-            return {
-                "target_date": str(target_date),
-                "assets_upserted": assets_upserted,
-                "trades_upserted": trades_upserted,
-                "status": ETLStatus.FAILED,
-                "error": str(exc),
-            }
+    summary = {
+        "target_date": str(target_date),
+        "assets_upserted": assets_upserted,
+        "trades_upserted": trades_upserted,
+        "status": ETLStatus.SUCCESS,
+    }
+    logger.info("[etl_pipeline] instruments+trades load done: %s", summary)
+    return summary
 
 
 def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
