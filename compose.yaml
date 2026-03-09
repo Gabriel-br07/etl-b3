@@ -1,24 +1,30 @@
 # =============================================================================
-# compose.yaml — etl-b3 minimal scraper stack
+# compose.yaml — etl-b3 stack
 # =============================================================================
 #
-# Architecture: ONE service, ONE volume.
+# Architecture: TWO services + ONE shared data volume + ONE db volume.
 #
+#   db         — TimescaleDB (PostgreSQL 16) with persistent named volume
 #   scheduler  — unified orchestrator that drives the full pipeline:
 #                  1. entrypoint.sh (root): fixes /app/data ownership → drops to scraper
 #                  2. run_b3_scraper.py         (BoletimDiarioScraper, Playwright)
 #                  3. run_b3_scraper_negocios.py (NegociosConsolidadosScraper, Playwright)
 #                  4. validate CSV              (cadastro_instrumentos_YYYYMMDD.normalized.csv)
-#                  5. loop every 25 min         (run_b3_quote_batch.py)
+#                  5. load instruments + trades into DB
+#                  6. loop every 25 min         (run_b3_quote_batch.py → load quotes into DB)
 #
 # Startup sequence:
-#   ENTRYPOINT entrypoint.sh  (runs as root — chowns /app/data → exec scraper)
+#   db starts → healthcheck passes → scheduler starts
+#   ENTRYPOINT entrypoint.sh  (runs as root – chowns /app/data → exec scraper)
 #   CMD        scheduler.py   (runs as scraper uid 1001)
 #
 # Quick start:
 #   docker compose build
 #   docker compose up -d
 #   docker compose logs -f scheduler
+#
+# Run migrations manually (first time or after schema changes):
+#   docker compose exec scheduler /app/.venv/bin/alembic upgrade head
 #
 # Manual triggers (while running):
 #   docker compose exec scheduler /app/docker/run_daily_batch.sh
@@ -28,11 +34,42 @@
 
 services:
 
+  # ---------------------------------------------------------------------------
+  # Database: PostgreSQL 16 + TimescaleDB 2.x
+  # ---------------------------------------------------------------------------
+  db:
+    image: timescale/timescaledb:2.17.2-pg16
+    container_name: etlb3_db
+    environment:
+      POSTGRES_DB: etlb3
+      POSTGRES_USER: etlb3
+      POSTGRES_PASSWORD: etlb3pass
+      TZ: America/Sao_Paulo
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Expose on localhost only – useful for local psql / DBeaver access
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etlb3 -d etlb3"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Scheduler: Playwright scrapers + ETL pipeline
+  # ---------------------------------------------------------------------------
   scheduler:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: etlb3_scheduler
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       TZ: America/Sao_Paulo
       PLAYWRIGHT_HEADLESS: "true"
@@ -55,15 +92,19 @@ services:
       HOME: /home/scraper
       PREFECT_HOME: /home/scraper/.prefect
       PREFECT_PROFILES_PATH: /home/scraper/.prefect/profiles.toml
+      # Database connection
+      DATABASE_URL: postgresql://etlb3:etlb3pass@db:5432/etlb3
       # Logging
       LOG_LEVEL: INFO
-    # Shared memory — Chromium needs at least 256 MB; 1 GB is safe
-
+      # Auto-run migrations on startup (set to "false" to skip)
+      RUN_MIGRATIONS_ON_STARTUP: "true"
     shm_size: "1gb"
     volumes:
       - scraper_data:/app/data
     restart: unless-stopped
 
 volumes:
+  db_data:
+    driver: local
   scraper_data:
-
+    driver: local

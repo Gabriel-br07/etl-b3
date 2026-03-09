@@ -120,13 +120,31 @@ def resolve_instruments_csv(
     """
     if data_dir is None:
         import os
-        # Prefer scraper output directory, then fallback/sample directory,
-        # then the documented default (/app/data/raw).
-        raw_root = (
-            os.environ.get("B3_OUTPUT_DIR")
-            or os.environ.get("B3_DATA_DIR")
-            or "/app/data/raw"
-        )
+        # Prefer scraper output directory, then fallback/sample directory.
+        # If the environment variables are not set in the current process,
+        # fall back to the application settings (which load .env via Pydantic).
+        raw_root = os.environ.get("B3_OUTPUT_DIR") or os.environ.get("B3_DATA_DIR")
+        if not raw_root:
+            try:
+                # Import settings – Pydantic Settings will read the repository .env
+                from app.core.config import settings
+
+                raw_root = getattr(settings, "b3_output_dir", None) or getattr(
+                    settings, "b3_data_dir", None
+                )
+            except (ImportError, ModuleNotFoundError) as exc:
+                log.warning(
+                    "Failed to import app.core.config.settings; "
+                    "falling back to default raw data directory: %s",
+                    exc,
+                )
+                raw_root = None
+
+        if not raw_root:
+            # final documented fallback
+            raw_root = "/app/data/raw"
+
+        log.debug("[etl_pipeline] resolved raw_root=%s", raw_root)
         data_dir = Path(raw_root)
     else:
         data_dir = Path(data_dir)
@@ -170,4 +188,3 @@ def resolve_instruments_csv(
         f"and {data_dir}/b3/boletim_diario/{yesterday}/. "
         "Ensure scraper_daily completed successfully."
     )
-
