@@ -152,7 +152,7 @@ class FactDailyQuote(Base):
         Index("ix_fact_daily_quotes_asset_id", "asset_id"),
         Index("ix_fact_daily_quotes_ticker", "ticker"),
         Index("ix_fact_daily_quotes_ticker_date", "ticker", "trade_date"),
-        Index("ix_fact_daily_quotes_trade_date_idx", "trade_date"),
+        Index("ix_fact_daily_quotes_trade_date", "trade_date"),
     )
 
 

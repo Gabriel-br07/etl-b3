@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.repositories.asset_repository import AssetRepository
-from app.repositories.etl_run_repository import ETLRunRepository  # noqa: F401 – re-exported
+
 from app.repositories.fact_quote_repository import FactQuoteRepository
 from app.repositories.quote_repository import QuoteRepository
 from app.repositories.trade_repository import TradeRepository
