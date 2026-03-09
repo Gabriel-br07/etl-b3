@@ -295,8 +295,8 @@ alembic revision --autogenerate -m "describe_change"
 
 - `alembic upgrade head` is safe to run multiple times (idempotent).
 - The TimescaleDB extension is enabled by `docker/initdb/01_timescaledb.sql` which runs automatically on first DB container start.
-- The `fact_quotes` hypertable is created in migration `0002_schema_v2` via `SELECT create_hypertable(...)`, and that migration also runs `CREATE EXTENSION timescaledb`.
-- For local development without the Docker DB, set `DATABASE_URL` to point to a PostgreSQL 14+ instance *with the TimescaleDB extension installed and enabled*, since the migrations as written expect TimescaleDB to be available.
+- The `fact_quotes` hypertable is created in migration `0002_schema_v2` via `SELECT create_hypertable(...)`, and that migration also runs `CREATE EXTENSION timescaledb` when the extension is available.
+- For local development without the Docker DB, set `DATABASE_URL` to point to a PostgreSQL 14+ instance. TimescaleDB is **recommended** (to get `fact_quotes` as a hypertable), but the migrations are written to run on plain PostgreSQL as well; without TimescaleDB, `fact_quotes` remains a regular Postgres table.
 
 ---
 
