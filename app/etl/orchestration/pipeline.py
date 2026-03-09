@@ -29,6 +29,7 @@ from app.etl.parsers.jsonl_quotes_parser import parse_jsonl_quotes
 from app.etl.parsers.trades_parser import parse_trades_file
 from app.etl.transforms.b3_transforms import transform_instruments, transform_trades
 from app.repositories.etl_run_repository import ETLRunRepository
+from app.db.models import ETLRun
 
 logger = logging.getLogger(__name__)
 
@@ -128,13 +129,15 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
     logger.info("[etl_pipeline] starting intraday quotes load  jsonl=%s", jsonl_path)
 
     # Start the ETL run audit in its own transaction so it is not rolled back
-    # together with the data load if the ETL fails.
+    # together with the data load if the ETL fails. Store only the run id so
+    # we don't pass a detached ORM instance between sessions.
     with managed_session() as audit_db:
         etl_repo = ETLRunRepository(audit_db)
         run = etl_repo.start_run(
             "intraday_quotes",
             source_file=str(jsonl_path),
         )
+        run_id = run.id
 
     rows_inserted = 0
 
@@ -153,13 +156,21 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
         try:
             with managed_session() as audit_db:
                 etl_repo = ETLRunRepository(audit_db)
-                etl_repo.finish_run(
-                    run,
-                    ETLStatus.FAILED,
-                    message=str(exc),
-                    rows_inserted=rows_inserted,
-                    rows_failed=1,
-                )
+                # Reload the run ORM instance from the new session by id
+                run_obj = audit_db.get(ETLRun, run_id)
+                if run_obj is None:
+                    logger.warning(
+                        "[etl_pipeline] could not reload ETL run id=%s to record failure",
+                        run_id,
+                    )
+                else:
+                    etl_repo.finish_run(
+                        run_obj,
+                        ETLStatus.FAILED,
+                        message=str(exc),
+                        rows_inserted=rows_inserted,
+                        rows_failed=1,
+                    )
         except Exception:
             # Avoid masking the original ETL failure if audit logging fails.
             logger.exception(
@@ -176,12 +187,20 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
     # If we reach here, the data load transaction committed successfully.
     with managed_session() as audit_db:
         etl_repo = ETLRunRepository(audit_db)
-        etl_repo.finish_run(
-            run,
-            ETLStatus.SUCCESS,
-            rows_inserted=rows_inserted,
-            rows_failed=0,
-        )
+        # Reload the run ORM instance by id before finishing
+        run_obj = audit_db.get(ETLRun, run_id)
+        if run_obj is None:
+            logger.warning(
+                "[etl_pipeline] could not reload ETL run id=%s to record success",
+                run_id,
+            )
+        else:
+            etl_repo.finish_run(
+                run_obj,
+                ETLStatus.SUCCESS,
+                rows_inserted=rows_inserted,
+                rows_failed=0,
+            )
 
     summary = {
         "source_file": jsonl_path.name,

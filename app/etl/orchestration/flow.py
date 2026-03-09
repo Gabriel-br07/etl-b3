@@ -21,7 +21,7 @@ import polars as pl
 from prefect import flow, get_run_logger, task
 
 from app.core.constants import ETLStatus, SourceMode
-from app.db.engine import SessionLocal
+from app.db.engine import SessionLocal, managed_session
 from app.etl.ingestion.local_adapter import LocalFileAdapter
 from app.etl.ingestion.remote_adapter import RemoteAdapter
 from app.etl.loaders.db_loader import load_assets, load_daily_quotes as load_quotes
@@ -30,6 +30,7 @@ from app.etl.parsers.instruments_parser import parse_instruments_csv
 from app.etl.parsers.trades_parser import parse_trades_file
 from app.etl.transforms.b3_transforms import transform_instruments, transform_trades
 from app.repositories.etl_run_repository import ETLRunRepository
+from app.db.models import ETLRun
 
 
 # ---------------------------------------------------------------------------
@@ -134,13 +135,19 @@ def run_daily_b3_etl(
     run = etl_repo.start_run("run_daily_b3_etl", source_date=target_date)
 
     # Persist the started run immediately so there is an audit record even if
-    # subsequent steps fail.
+    # subsequent steps fail. Store only the run id so we don't pass a detached
+    # ORM instance between sessions; audit updates will use a fresh session.
     try:
         db.commit()
     except Exception:
         db.rollback()
         db.close()
         raise
+
+    run_id = run.id
+    # Close the session that created the run to avoid accidentally reusing
+    # the ORM instance across other sessions/tasks.
+    db.close()
 
     try:
         instruments_path = resolve_instruments(source_mode, target_date)
@@ -161,27 +168,53 @@ def run_daily_b3_etl(
             "quotes_upserted": quotes_count,
             "source_mode": source_mode,
         }
-        etl_repo.finish_run(run, ETLStatus.SUCCESS, str(summary), rows_inserted=assets_count + quotes_count)
 
-        # Persist final status and counts
+        # Record final status in an independent audit transaction to avoid
+        # session/transaction mixing with worker tasks that used their own DB
+        # sessions.
         try:
-            db.commit()
+            with managed_session() as audit_db:
+                audit_repo = ETLRunRepository(audit_db)
+                run_obj = audit_db.get(ETLRun, run_id)
+                if run_obj is None:
+                    logger.warning(
+                        "[flow] could not reload ETL run id=%s to record success",
+                        run_id,
+                    )
+                else:
+                    audit_repo.finish_run(run_obj, ETLStatus.SUCCESS, str(summary), rows_inserted=assets_count + quotes_count)
         except Exception:
-            db.rollback()
+            # If audit recording fails, log and raise so the outer handler can
+            # surface the error (we avoid swallowing the problem).
+            logger.exception("[flow] failed to record ETL success audit for run id=%s", run_id)
             raise
 
         logger.info("ETL completed: %s", summary)
         return summary
 
     except Exception as exc:  # noqa: BLE001
-        # Record failure and persist the audit record
+        # Record failure and persist the audit record in its own transaction
         try:
-            etl_repo.finish_run(run, ETLStatus.FAILED, str(exc))
-            db.commit()
+            with managed_session() as audit_db:
+                audit_repo = ETLRunRepository(audit_db)
+                run_obj = audit_db.get(ETLRun, run_id)
+                if run_obj is None:
+                    logger.warning(
+                        "[flow] could not reload ETL run id=%s to record failure",
+                        run_id,
+                    )
+                else:
+                    audit_repo.finish_run(run_obj, ETLStatus.FAILED, str(exc))
         except Exception:
-            # If committing the failure status itself fails, ensure rollback
-            db.rollback()
+            # If audit logging fails, log but avoid masking the original
+            # exception.
+            logger.exception("[flow] failed to record ETL failure audit for run id=%s", run_id)
+
         logger.error("ETL failed: %s", exc)
         raise
     finally:
-        db.close()
+        # Ensure any leftover DB session is closed (db may have already been closed).
+        try:
+            db.close()
+        except Exception:
+            pass
