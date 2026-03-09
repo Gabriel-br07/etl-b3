@@ -85,7 +85,20 @@ def run_instruments_and_trades_pipeline(
             if trades_file is not None and trades_file.exists():
                 trades_df = parse_trades_file(trades_file)
                 trade_rows = transform_trades(trades_df, trades_file.name)
-                trades_upserted = load_trades(db, trade_rows)
+
+                # Adapt transform_trades() output to fact_daily_trades schema:
+                # map last_price -> close_price and drop last_price to avoid
+                # passing unknown columns into the loader/ORM.
+                fact_trade_rows = []
+                for row in trade_rows:
+                    # Ensure we have a mutable dict copy
+                    mapped_row = dict(row)
+                    if "last_price" in mapped_row and "close_price" not in mapped_row:
+                        mapped_row["close_price"] = mapped_row["last_price"]
+                        del mapped_row["last_price"]
+                    fact_trade_rows.append(mapped_row)
+
+                trades_upserted = load_trades(db, fact_trade_rows)
             elif trades_file is not None:
                 logger.warning(
                     "[etl_pipeline] trades file not found: %s - skipping trade load",
