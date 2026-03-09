@@ -137,6 +137,8 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
             "intraday_quotes",
             source_file=str(jsonl_path),
         )
+        # Ensure the ETLRun is flushed so the primary key is assigned
+        audit_db.flush()
         run_id = run.id
 
     rows_inserted = 0

@@ -100,9 +100,9 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("ticker", "quoted_at"),
     )
-    op.create_index("ix_fact_quotes_ticker_quoted_at", "fact_quotes", ["ticker", "quoted_at"])
     op.create_index("ix_fact_quotes_trade_date", "fact_quotes", ["trade_date"])
     # Attempt to enable TimescaleDB and create hypertable only when available/allowed.
+    # This keeps migrations compatible with plain PostgreSQL and managed instances where
     # This keeps migrations compatible with plain PostgreSQL and managed instances where
     # CREATE EXTENSION is disallowed.
     op.execute(

@@ -27,11 +27,11 @@ def test_load_assets_chunks_large_input(mock_db):
     rows = [{"ticker": f"T{i}"} for i in range(1200)]
     with patch("app.etl.loaders.db_loader.AssetRepository") as MockRepo:
         instance = MockRepo.return_value
-        instance.upsert_many.return_value = 500
+        instance.upsert_many.side_effect = [500, 500, 200]
         result = load_assets(mock_db, rows)
     # 1200 rows / 500 chunk_size = 3 chunks (500 + 500 + 200)
     assert instance.upsert_many.call_count == 3
-    assert result == 1500  # 3 * 500
+    assert result == 1200  # 500 + 500 + 200
 def test_load_trades_empty_returns_zero(mock_db):
     assert load_trades(mock_db, []) == 0
 def test_load_trades_calls_upsert(mock_db):
