@@ -64,6 +64,8 @@ def run_instruments_and_trades_pipeline(
             source_file=str(instruments_csv),
             source_date=target_date,
         )
+        # Ensure the ETLRun row is flushed so that run.id is populated
+        audit_db.flush()
         run_id = run.id
 
     assets_upserted = 0

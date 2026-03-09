@@ -103,7 +103,7 @@ def upgrade() -> None:
     op.create_index("ix_fact_quotes_trade_date", "fact_quotes", ["trade_date"])
     # Attempt to enable TimescaleDB and create hypertable only when available/allowed.
     # This keeps migrations compatible with plain PostgreSQL and managed instances where
-    # This keeps migrations compatible with plain PostgreSQL and managed instances where
+
     # CREATE EXTENSION is disallowed.
     op.execute(
         """
@@ -183,7 +183,7 @@ def downgrade() -> None:
         $$;
         """
     )
-    op.drop_index("ix_fact_quotes_ticker_quoted_at", table_name="fact_quotes")
+    op.execute("DROP INDEX IF EXISTS ix_fact_quotes_ticker_quoted_at;")
     op.drop_table("fact_quotes")
     op.drop_index("ix_fact_daily_trades_ticker_date", table_name="fact_daily_trades")
     op.drop_index("ix_fact_daily_trades_trade_date", table_name="fact_daily_trades")

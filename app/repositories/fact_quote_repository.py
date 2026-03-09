@@ -53,11 +53,11 @@ class FactQuoteRepository:
         stmt = insert(FactQuote).values(rows)
         stmt = stmt.on_conflict_do_nothing(
             index_elements=["ticker", "quoted_at"]
-        )
-        # For INSERT ... ON CONFLICT DO NOTHING, rowcount is not reliably
-        # available on all drivers.  We use rowcount when > 0, else 0.
+        ).returning(FactQuote.id)
+        # For INSERT ... ON CONFLICT DO NOTHING, rowcount may be unreliable on some
+        # drivers, so we use RETURNING and count the actually inserted rows instead.
         result = self.db.execute(stmt)
         # Commit is handled by the caller (managed_session) to provide atomicity
-        count = result.rowcount
-        return count if count is not None and count >= 0 else 0
+        inserted_rows = result.fetchall()
+        return len(inserted_rows)
 
