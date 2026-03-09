@@ -53,7 +53,7 @@ class FactQuoteRepository:
         stmt = insert(FactQuote).values(rows)
         stmt = stmt.on_conflict_do_nothing(
             index_elements=["ticker", "quoted_at"]
-        ).returning(FactQuote.id)
+        ).returning(FactQuote.ticker)
         # For INSERT ... ON CONFLICT DO NOTHING, rowcount may be unreliable on some
         # drivers, so we use RETURNING and count the actually inserted rows instead.
         result = self.db.execute(stmt)

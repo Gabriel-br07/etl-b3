@@ -181,7 +181,7 @@ class FactQuote(Base):
     )
 
     __table_args__ = (
-        Index("ix_fact_quotes_ticker_quoted_at", "ticker", "quoted_at"),
+
         Index("ix_fact_quotes_trade_date", "trade_date"),
     )
 
