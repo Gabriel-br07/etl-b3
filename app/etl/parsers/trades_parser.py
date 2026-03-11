@@ -41,7 +41,7 @@ def parse_trades_file(path: Path | str) -> pl.DataFrame:
     """Parse a B3 trades file (ZIP or CSV) and return a normalised DataFrame.
 
     Columns returned (subset that mapped successfully):
-        ticker, trade_date, last_price, min_price, max_price, avg_price,
+        ticker, trade_date, open_price, last_price, min_price, max_price, avg_price,
         variation_pct, financial_volume, trade_count
     """
     path = Path(path)
@@ -66,11 +66,13 @@ def parse_trades_file(path: Path | str) -> pl.DataFrame:
             path,
             df.columns,
         )
+    logger.info("Mapped trade columns: %s", rename_map)
     df = df.rename(rename_map)
 
     internal_cols = [
         "ticker",
         "trade_date",
+        "open_price",
         "last_price",
         "min_price",
         "max_price",
