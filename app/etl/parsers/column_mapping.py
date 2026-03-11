@@ -154,6 +154,37 @@ def _normalize_name(name: str) -> str:
     return s.lower()
 
 
+# Precompute normalized lookup maps for the builtin mappings to avoid
+# rebuilding them on every call and to ensure collision messages are emitted
+# only once at import time (and at DEBUG level to avoid spamming production
+# logs). For any other mapping provided at runtime, we build a transient
+# normalized map on demand but log collisions at DEBUG.
+def _build_normalized_map(mapping: dict[str, str], mapping_name: str | None = None, log_level: int = logging.DEBUG) -> dict[str, str]:
+    logger = logging.getLogger(__name__)
+    norm: dict[str, str] = {}
+    original_key: dict[str, str] = {}
+    for k, v in mapping.items():
+        nk = _normalize_name(k)
+        if nk in norm:
+            logger.log(
+                log_level,
+                "Header normalization collision in %s: '%s' (maps to %s) conflicts with '%s' (maps to %s) - overwriting with latest",
+                mapping_name or "<mapping>",
+                k,
+                v,
+                original_key.get(nk, "<unknown>"),
+                norm.get(nk),
+            )
+        norm[nk] = v
+        original_key[nk] = k
+    return norm
+
+
+# Precomputed normalized maps for the two built-in mapping dicts
+INSTRUMENT_NORMALIZED_MAP = _build_normalized_map(INSTRUMENT_COLUMN_MAP, mapping_name="INSTRUMENT_COLUMN_MAP")
+TRADE_NORMALIZED_MAP = _build_normalized_map(TRADE_COLUMN_MAP, mapping_name="TRADE_COLUMN_MAP")
+
+
 def map_columns(df_columns: list[str], mapping: dict[str, str]) -> dict[str, str]:
     """Build a rename dict from actual DataFrame columns to internal names.
 
@@ -172,21 +203,16 @@ def map_columns(df_columns: list[str], mapping: dict[str, str]) -> dict[str, str
     """
     logger = logging.getLogger(__name__)
 
-    # Build normalized lower map from mapping keys, logging collisions
-    lower_map: dict[str, str] = {}
-    lower_original_key: dict[str, str] = {}
-    for k, v in mapping.items():
-        nk = _normalize_name(k)
-        if nk in lower_map:
-            logger.warning(
-                "Header normalization collision: '%s' (maps to %s) conflicts with '%s' (maps to %s) - overwriting with latest",
-                k,
-                v,
-                lower_original_key.get(nk, "<unknown>"),
-                lower_map.get(nk),
-            )
-        lower_map[nk] = v
-        lower_original_key[nk] = k
+    # Use precomputed normalized maps for the built-in mappings to avoid
+    # repeated work and repeated log noise. For other mappings, build a
+    # transient normalized map and emit collisions at DEBUG level only.
+    if mapping is INSTRUMENT_COLUMN_MAP:
+        lower_map = INSTRUMENT_NORMALIZED_MAP
+    elif mapping is TRADE_COLUMN_MAP:
+        lower_map = TRADE_NORMALIZED_MAP
+    else:
+        # transient normalized map for custom mappings
+        lower_map = _build_normalized_map(mapping, mapping_name=None, log_level=logging.DEBUG)
 
     result: dict[str, str] = {}
     used_internals: set[str] = set()
@@ -232,8 +258,8 @@ def extract_ticker(row: dict) -> str | None:
 
     # Build normalized lookup of row keys
     norm_row = { _normalize_name(k): v for k, v in row.items() }
-    # Build normalized mapping keys -> internal
-    norm_map = { _normalize_name(k): v for k, v in INSTRUMENT_COLUMN_MAP.items() }
+    # Use precomputed normalized mapping for instruments
+    norm_map = INSTRUMENT_NORMALIZED_MAP
 
     for nk, internal in norm_map.items():
         if internal != "ticker":
