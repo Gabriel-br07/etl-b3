@@ -76,7 +76,27 @@ def wait_for_stable_file(path: Path, attempts: int = 3, delay: float = 1.0) -> b
         # Stability is when current size equals the previous observed size.
         stable = (size == prev_size)
         prev_size = size
-        time.sleep(delay)
+        # Only sleep between checks, not after the final measurement.
+        # This avoids adding an unnecessary delay before returning.
+        # If attempts <= 1 the loop executes once and no sleep occurs.
+        # Use an indexed loop to detect the last iteration.
+
+    # The previous implementation always slept after each stat call. To
+    # preserve the same number of checks but avoid the trailing sleep, we
+    # perform the sleeps between iterations. Reimplement the loop with
+    # explicit index to control sleeping.
+
+    prev_size = -1
+    stable = False
+    for i in range(attempts):
+        try:
+            size = path.stat().st_size
+        except Exception:
+            return False
+        stable = (size == prev_size)
+        prev_size = size
+        if i < attempts - 1:
+            time.sleep(delay)
 
     # After running the full loop, return whether stability was observed
     # between the last two measurements.
