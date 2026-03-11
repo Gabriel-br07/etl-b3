@@ -49,13 +49,9 @@ def _resolve_local_paths(target_date: date) -> tuple[Path, Path | None]:
     )
 
     data_dir = Path(settings.b3_data_dir)
-    try:
-        # First, try to resolve an instruments CSV for the requested target_date.
-        instruments_csv = find_csv_for_date(
-            data_dir=data_dir,
-            target_date=target_date,
-        )
-    except CSVNotFoundError:
+    # First, try to resolve an instruments CSV for the requested target_date.
+    instruments_csv = find_csv_for_date(data_dir, target_date)
+    if instruments_csv is None:
         # Fallback to the existing "most recent" behavior (today / yesterday).
         try:
             instruments_csv = resolve_instruments_csv(
