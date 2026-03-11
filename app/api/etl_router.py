@@ -32,28 +32,42 @@ def _resolve_local_paths(target_date: date) -> tuple[Path, Path | None]:
     """Resolve instruments CSV + sibling trades file for *target_date*.
 
     Resolution order:
-    1. Exact dated CSV:  <B3_DATA_DIR>/b3/boletim_diario/<YYYY-MM-DD>/
-                          cadastro_instrumentos_<YYYYMMDD>.normalized.csv
-    2. Yesterday fallback.
+    1. Exact dated CSV for *target_date*:
+       <B3_DATA_DIR>/b3/boletim_diario/<YYYY-MM-DD>/
+       cadastro_instrumentos_<YYYYMMDD>.normalized.csv
+    2. Fallback to the most recent CSV (today / yesterday), mirroring
+       `resolve_instruments_csv`.
     3. Any glob match in the dated directory.
 
     Returns (instruments_csv, trades_file_or_None).
     Raises HTTPException 404 if no CSV found.
     """
-    from app.etl.orchestration.csv_resolver import CSVNotFoundError, resolve_instruments_csv
+    from app.etl.orchestration.csv_resolver import (
+        CSVNotFoundError,
+        find_csv_for_date,
+        resolve_instruments_csv,
+    )
 
     data_dir = Path(settings.b3_data_dir)
     try:
-        instruments_csv = resolve_instruments_csv(
+        # First, try to resolve an instruments CSV for the requested target_date.
+        instruments_csv = find_csv_for_date(
             data_dir=data_dir,
-            retry_count=0,  # API routes don't block — fail fast
-            retry_delay_seconds=0,
+            target_date=target_date,
         )
-    except CSVNotFoundError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Instruments CSV not found in {data_dir}: {exc}",
-        ) from exc
+    except CSVNotFoundError:
+        # Fallback to the existing "most recent" behavior (today / yesterday).
+        try:
+            instruments_csv = resolve_instruments_csv(
+                data_dir=data_dir,
+                retry_count=0,  # API routes don't block — fail fast
+                retry_delay_seconds=0,
+            )
+        except CSVNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Instruments CSV not found in {data_dir}: {exc}",
+            ) from exc
 
     # Sibling trades file discovery
     trades_file: Path | None = None

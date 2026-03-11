@@ -1,15 +1,16 @@
-"""Integration tests for the ETL load layer.
+"""Integration-style tests for the ETL load layer.
 
-All tests use an in-process SQLite database (via SQLAlchemy) so **no running
-PostgreSQL instance is required**.  PostgreSQL-specific features (TimescaleDB
-hypertable, ON CONFLICT) are handled through compatible SQLite equivalents or
-mocked at the repository boundary.
+These tests focus on the orchestration and business logic of the load layer
+while **mocking out the persistence layer** (SQLAlchemy sessions /
+repositories) using MagicMock/patch. No real database engine (SQLite or
+PostgreSQL) is created as part of this test module.
 
 Test coverage
 -------------
 - load_assets idempotency: upsert twice → same row count
-- load_trades conflict-update: close_price changes on re-run
-- load_intraday_quotes on-conflict-do-nothing: duplicate rows not inserted
+- load_trades conflict-update semantics: close_price changes on re-run
+- load_intraday_quotes on-conflict-do-nothing semantics: duplicate rows not
+  inserted
 - Three-transaction audit pattern (instruments+trades pipeline):
     - SUCCESS path: audit row ends with status=success
     - FAILURE path: data rolled back; audit row ends with status=failed

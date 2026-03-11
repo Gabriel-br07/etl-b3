@@ -238,20 +238,7 @@ def _normalize_csv_using_stdlib(src_path: Path, dest_path: Path, default_delimit
         detected_delim = default_delimiter
         logger.debug("csv.Sniffer failed for %s; falling back to default delimiter '%s'", src_path, detected_delim)
 
-    # Try to use polars to read & write cleanly when available (minimal extra code).
-    if table_key == "negocios_consolidados":
-        try:
-            import polars as pl
-            # Read skipping rows before header_idx and keep header
-            # Note: pl.read_csv uses 'has_header' and 'skip_rows' to skip top lines.
-            df = pl.read_csv(src_path, sep=detected_delim, has_header=True, skip_rows=header_idx)
-            # Write using semicolon and utf-8
-            df.write_csv(dest_path, separator=';')
-            return
-        except Exception:
-            logger.debug("polars normalization unavailable or failed for %s; falling back to stdlib", src_path)
-
-    # Fallback: parse useful block with csv.reader and write semicolon-delimited output
+    # Parse useful block with csv.reader and write semicolon-delimited output
     src_io = io.StringIO(useful_block_text)
     reader = csv.reader(src_io, delimiter=detected_delim)
 

@@ -69,6 +69,7 @@ Key properties:
 |---|---|---|
 | `run_instruments_and_trades_pipeline(csv, trades, date)` | `app/etl/orchestration/pipeline.py` | `dim_assets`, `fact_daily_trades`, `etl_runs` |
 | `run_intraday_quotes_pipeline(jsonl_path)` | `app/etl/orchestration/pipeline.py` | `fact_quotes`, `etl_runs` |
+| `run_daily_quotes_pipeline(...)` | `app/etl/orchestration/pipeline.py` | `fact_daily_quotes`, `etl_runs` |
 
 ### Loaders and repositories
 
