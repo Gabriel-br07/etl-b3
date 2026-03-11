@@ -51,6 +51,7 @@ def save_download(
     filename_template: str,
     source_url: str = "",
     default_delimiter: str = ";",
+    table_key: str | None = None,
 ) -> ScrapeResult:
     """Persist *download* to *output_dir* with a deterministic filename.
 
@@ -106,6 +107,7 @@ def save_download(
                 src_path=dest,
                 dest_path=norm_path,
                 default_delimiter=default_delimiter,
+                table_key=table_key,
             )
             result.conversion_succeeded = True
             # Keep file_path pointing to the raw/original file; record normalized path
@@ -169,10 +171,24 @@ def trigger_csv_export_and_save(
         filename_template=filename_template,
         source_url=source_url,
         default_delimiter=default_delimiter,
+        table_key=table_key,
     )
 
 
-def _normalize_csv_using_stdlib(src_path: Path, dest_path: Path, default_delimiter: str = ";") -> None:
+def _get_header_index(table_key: str | None, lines: list[str]) -> int:
+    """Return the header line index (0-based) for a downloaded CSV based on table_key.
+
+    Behavior:
+      - If table_key == 'negocios_consolidados': return 3 if the file has more
+        than 3 lines, otherwise return the last line index (len(lines) - 1).
+      - Otherwise: return 2 if the file has at least 3 lines, else 0.
+    """
+    if table_key == "negocios_consolidados":
+        return 3 if len(lines) > 3 else (len(lines) - 1)
+    return 2 if len(lines) >= 3 else 0
+
+
+def _normalize_csv_using_stdlib(src_path: Path, dest_path: Path, default_delimiter: str = ";", table_key: str | None = None) -> None:
     """Normalize CSV in *src_path* and write UTF-8 semicolon-delimited output to *dest_path*.
 
     Rules implemented:
@@ -184,6 +200,10 @@ def _normalize_csv_using_stdlib(src_path: Path, dest_path: Path, default_delimit
         set to ';,|\t'. If Sniffer fails, fall back to the provided default_delimiter.
       - Preserve quoting by using csv.reader and csv.writer with quoting=csv.QUOTE_MINIMAL.
       - Write output as UTF-8 with delimiter=';'.
+
+    Special handling: for `negocios_consolidados` the real header may appear on a
+    different line (user reported it's at index 3). We honor that by using index 3
+    for that table; for others we keep the previous behavior.
     """
     text = None
     for enc in ("utf-8-sig", "utf-8", "latin-1"):
@@ -201,23 +221,16 @@ def _normalize_csv_using_stdlib(src_path: Path, dest_path: Path, default_delimit
         dest_path.write_text("", encoding="utf-8")
         return
 
-    # Determine the useful block for detection/conversion
-    if len(lines) >= 3:
-        # Use line 3 (index 2) as header, and subsequent lines as data
-        header_line = lines[2]
-        useful_block_lines = lines[2:]
-    else:
-        # Fewer than 3 lines: use entire file as useful block but still honor rule 5
-        header_line = lines[0]
-        useful_block_lines = lines
+    # Determine header index using helper
+    header_idx = _get_header_index(table_key, lines)
 
+    useful_block_lines = lines[header_idx:]
     useful_block_text = "\n".join(useful_block_lines)
 
     # Ask csv.Sniffer to detect delimiter from the useful block only, using candidate delimiters
     sniffer_sample = useful_block_text[: 32 * 1024]  # limit sample size
     dialect = None
     try:
-        # Provide a set of possible delimiters. csv.Sniffer will choose among them.
         dialect = csv.Sniffer().sniff(sniffer_sample, delimiters=';,|\t')
         detected_delim = dialect.delimiter
         logger.debug("csv.Sniffer detected delimiter '%s' for %s", detected_delim, src_path)
@@ -225,21 +238,29 @@ def _normalize_csv_using_stdlib(src_path: Path, dest_path: Path, default_delimit
         detected_delim = default_delimiter
         logger.debug("csv.Sniffer failed for %s; falling back to default delimiter '%s'", src_path, detected_delim)
 
-    # Now parse the useful block with the detected delimiter and preserve quoting
+    # Try to use polars to read & write cleanly when available (minimal extra code).
+    if table_key == "negocios_consolidados":
+        try:
+            import polars as pl
+            # Read skipping rows before header_idx and keep header
+            # Note: pl.read_csv uses 'has_header' and 'skip_rows' to skip top lines.
+            df = pl.read_csv(src_path, sep=detected_delim, has_header=True, skip_rows=header_idx)
+            # Write using semicolon and utf-8
+            df.write_csv(dest_path, separator=';')
+            return
+        except Exception:
+            logger.debug("polars normalization unavailable or failed for %s; falling back to stdlib", src_path)
+
+    # Fallback: parse useful block with csv.reader and write semicolon-delimited output
     src_io = io.StringIO(useful_block_text)
     reader = csv.reader(src_io, delimiter=detected_delim)
 
-    # Prepare to write normalized file with semicolon delimiter and UTF-8 encoding
     tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8", newline="") as out_f:
         writer = csv.writer(out_f, delimiter=";", quoting=csv.QUOTE_MINIMAL)
         for row in reader:
             writer.writerow(row)
 
-    # Atomically move normalized file into place
     tmp_path.replace(dest_path)
 
     # Note: We intentionally do not modify the original src_path (raw/original saved by Playwright)
-
-
-# End of file
