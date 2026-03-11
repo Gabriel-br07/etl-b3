@@ -65,3 +65,11 @@ class ETLRunRepository:
         if rows_failed is not None:
             run.rows_failed = rows_failed
         return run
+
+    def get_by_id(self, run_id: int) -> ETLRun | None:
+        """Fetch an ETLRun by primary key from the current session.
+
+        Returns None if the run does not exist (e.g. was never committed).
+        """
+        return self.db.get(ETLRun, run_id)
+
