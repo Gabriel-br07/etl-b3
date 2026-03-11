@@ -59,8 +59,14 @@ def save_download(
       - The raw/original file is saved first and never modified.
       - A normalized copy is produced (UTF-8, semicolon-delimited) and saved
         alongside the raw file; the raw file is never overwritten.
-      - If the file has 3+ textual lines, the third line is used as header and
-        only lines from there onward are used for delimiter detection and conversion.
+      - The header line used for delimiter detection and conversion depends on
+        the table being downloaded. For the default tables we use the third
+        textual line (i.e. line index 2) if the file has at least three lines;
+        otherwise the first available line is used. For
+        ``negocios_consolidados`` we use the fourth textual line (index 3)
+        when the file has more than three lines; if it has three or fewer
+        lines we fall back to the last available line. See
+        :func:`_get_header_index` for the exact behavior.
       - Delimiter detection uses csv.Sniffer on the useful block with candidate
         delimiters set to ';', ',', '|', '\t'. If Sniffer fails, the provided
         default_delimiter is used.
@@ -193,9 +199,13 @@ def _normalize_csv_using_stdlib(src_path: Path, dest_path: Path, default_delimit
 
     Rules implemented:
       - Read the source text using common encodings (utf-8-sig, utf-8, latin-1).
-      - If the file has 3+ lines, use line 3 as header and only lines from line 3 onward
-        for delimiter detection and conversion. Lines 1 and 2 are never used in the
-        detection or fallback conversion.
+      - The header line used for delimiter detection and conversion depends on
+        the table being normalized: for most tables we use the third textual
+        line (0-based index 2) if the file has at least three lines; otherwise
+        we use the first available line. For ``negocios_consolidados`` the
+        header is expected on the fourth textual line (index 3) when the file
+        has more than three lines; if it has three or fewer lines we fall back
+        to the last available line. This logic mirrors :func:`_get_header_index`.
       - Detect delimiter using csv.Sniffer on the useful block with delimiters candidates
         set to ';,|\t'. If Sniffer fails, fall back to the provided default_delimiter.
       - Preserve quoting by using csv.reader and csv.writer with quoting=csv.QUOTE_MINIMAL.
