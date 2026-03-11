@@ -59,8 +59,17 @@ def load_trades(db: Session, rows: list[dict]) -> int:
 def load_daily_quotes(db: Session, rows: list[dict]) -> int:
     """Upsert daily quote rows into fact_daily_quotes (legacy). Returns affected row count."""
     if not rows:
-        logger.warning("load_daily_quotes called with empty row list.")
+        logger.warning(
+            "load_daily_quotes called with empty row list – no rows will be inserted. "
+            "Check that transform_daily_quotes produced data and that the CSV "
+            "contains columns mappable to the fact_daily_quotes schema."
+        )
         return 0
+    logger.info(
+        "load_daily_quotes: inserting %d rows. First row keys: %s",
+        len(rows),
+        list(rows[0].keys()),
+    )
     repo = QuoteRepository(db)
     total = 0
     for chunk in _chunked(rows, _CHUNK_SIZE):
@@ -76,8 +85,17 @@ load_quotes = load_daily_quotes
 def load_intraday_quotes(db: Session, rows: list[dict]) -> int:
     """Insert intraday price points into fact_quotes hypertable. Returns inserted row count."""
     if not rows:
-        logger.warning("load_intraday_quotes called with empty row list.")
+        logger.warning(
+            "load_intraday_quotes called with empty row list – no rows will be inserted. "
+            "Check that transform_jsonl_quotes produced data and that the JSONL "
+            "contains the required 'ticker' and 'quoted_at' fields."
+        )
         return 0
+    logger.info(
+        "load_intraday_quotes: inserting %d rows. First row keys: %s",
+        len(rows),
+        list(rows[0].keys()),
+    )
     repo = FactQuoteRepository(db)
     total = 0
     for chunk in _chunked(rows, _CHUNK_SIZE):

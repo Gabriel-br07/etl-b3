@@ -32,6 +32,18 @@ from app.use_cases.quotes.get_latest_snapshot import get_latest_snapshot
 router = APIRouter(prefix="/quotes", tags=["Quotes"])
 
 
+def _parse_ticker_list(tickers: str | None) -> list[str] | None:
+    """Parse a comma-separated ticker string into a filtered, uppercased list.
+
+    Returns ``None`` when *tickers* is ``None`` or empty (meaning "all tickers").
+    Empty tokens produced by leading/trailing/consecutive commas are discarded.
+    """
+    if not tickers:
+        return None
+    result = [t for t in (t.strip().upper() for t in tickers.split(",")) if t]
+    return result or None
+
+
 @router.get(
     "/latest",
     response_model=dict,
@@ -47,7 +59,7 @@ def get_latest_quotes(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ) -> dict:
-    ticker_list = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+    ticker_list = _parse_ticker_list(tickers)
     repo = QuoteRepository(db)
     items, total = repo.get_latest_per_ticker(tickers=ticker_list, limit=limit, offset=offset)
     return {

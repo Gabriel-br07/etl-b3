@@ -9,10 +9,13 @@ Pipeline entry points
 run_instruments_and_trades_pipeline(instruments_csv, trades_file, target_date)
     Loads dim_assets + fact_daily_trades from normalized CSVs.
 
+run_daily_quotes_pipeline(quotes_csv, target_date)
+    Loads fact_daily_quotes from a normalized negocios_consolidados CSV.
+
 run_intraday_quotes_pipeline(jsonl_path)
     Loads fact_quotes hypertable from a JSONL file.
 
-Both functions record ETL run audit rows in etl_runs.
+All functions record ETL run audit rows in etl_runs.
 """
 
 from __future__ import annotations
@@ -23,13 +26,17 @@ from pathlib import Path
 
 from app.core.constants import ETLStatus
 from app.db.engine import managed_session
-from app.etl.loaders.db_loader import load_assets, load_intraday_quotes, load_trades
+from app.etl.loaders.db_loader import load_assets, load_daily_quotes, load_intraday_quotes, load_trades
 from app.etl.parsers.instruments_parser import parse_instruments_csv
 from app.etl.parsers.jsonl_quotes_parser import parse_jsonl_quotes
 from app.etl.parsers.trades_parser import parse_trades_file
-from app.etl.transforms.b3_transforms import transform_instruments, transform_trades
+from app.etl.transforms.b3_transforms import (
+    transform_daily_quotes,
+    transform_instruments,
+    transform_jsonl_quotes,
+    transform_trades,
+)
 from app.repositories.etl_run_repository import ETLRunRepository
-from app.db.models import ETLRun
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +91,7 @@ def run_instruments_and_trades_pipeline(
             # --- trades ---
             if trades_file is not None and trades_file.exists():
                 trades_df = parse_trades_file(trades_file)
-                trade_rows = transform_trades(trades_df, trades_file.name)
+                trade_rows = transform_trades(trades_df, trades_file.name, target_date=target_date)
 
                 # Adapt transform_trades() output to fact_daily_trades schema:
                 # map last_price -> close_price and drop last_price to avoid
@@ -112,7 +119,7 @@ def run_instruments_and_trades_pipeline(
         try:
             with managed_session() as audit_db:
                 etl_repo = ETLRunRepository(audit_db)
-                run_obj = audit_db.get(ETLRun, run_id)
+                run_obj = etl_repo.get_by_id(run_id)
                 if run_obj is None:
                     logger.warning(
                         "[etl_pipeline] could not reload ETL run id=%s to record failure",
@@ -144,7 +151,7 @@ def run_instruments_and_trades_pipeline(
     # separate transaction.
     with managed_session() as audit_db:
         etl_repo = ETLRunRepository(audit_db)
-        run_obj = audit_db.get(ETLRun, run_id)
+        run_obj = etl_repo.get_by_id(run_id)
         if run_obj is None:
             logger.warning(
                 "[etl_pipeline] could not reload ETL run id=%s to record success",
@@ -165,6 +172,129 @@ def run_instruments_and_trades_pipeline(
         "status": ETLStatus.SUCCESS,
     }
     logger.info("[etl_pipeline] instruments+trades load done: %s", summary)
+    return summary
+
+
+def run_daily_quotes_pipeline(
+    quotes_csv: Path,
+    target_date: date,
+) -> dict:
+    """Parse a normalized negocios_consolidados CSV and load into fact_daily_quotes.
+
+    The CSV is expected to contain columns that map (via TRADE_COLUMN_MAP) to:
+        ticker, last_price, min_price, max_price, avg_price,
+        variation_pct, financial_volume, trade_count
+
+    ``open_price`` is intentionally ignored – it is not in the
+    ``fact_daily_quotes`` schema.
+
+    If ``trade_date`` is absent from the CSV it is derived from
+    ``target_date`` or the filename (negocios_consolidados_YYYYMMDD).
+
+    Args:
+        quotes_csv:  Path to the normalized quotes CSV file.
+        target_date: Reference date used as trade_date fallback and in the
+                     audit row.
+
+    Returns:
+        Summary dict with keys: target_date, quotes_upserted, status.
+    """
+    logger.info(
+        "[etl_pipeline] starting daily quotes load  date=%s  csv=%s",
+        target_date,
+        quotes_csv,
+    )
+
+    with managed_session() as audit_db:
+        etl_repo = ETLRunRepository(audit_db)
+        run = etl_repo.start_run(
+            "daily_quotes",
+            source_file=str(quotes_csv),
+            source_date=target_date,
+        )
+        audit_db.flush()
+        run_id = run.id
+
+    quotes_upserted = 0
+
+    try:
+        with managed_session() as db:
+            logger.info(
+                "[etl_pipeline] parsing quotes CSV: %s", quotes_csv
+            )
+            quotes_df = parse_trades_file(quotes_csv)
+            logger.info(
+                "[etl_pipeline] Input columns detected: %s",
+                quotes_df.columns,
+            )
+            quote_rows = transform_daily_quotes(
+                quotes_df, quotes_csv.name, target_date=target_date
+            )
+            if not quote_rows:
+                logger.warning(
+                    "[etl_pipeline] transform_daily_quotes returned 0 rows for %s",
+                    quotes_csv.name,
+                )
+            else:
+                logger.info(
+                    "[etl_pipeline] Mapped columns: %s",
+                    [k for k in quote_rows[0].keys() if k != "source_file_name"],
+                )
+            quotes_upserted = load_daily_quotes(db, quote_rows)
+
+    except Exception as exc:
+        logger.exception("[etl_pipeline] daily quotes load FAILED: %s", exc)
+        try:
+            with managed_session() as audit_db:
+                etl_repo = ETLRunRepository(audit_db)
+                run_obj = etl_repo.get_by_id(run_id)
+                if run_obj is None:
+                    logger.warning(
+                        "[etl_pipeline] could not reload ETL run id=%s to record failure",
+                        run_id,
+                    )
+                else:
+                    etl_repo.finish_run(
+                        run_obj,
+                        ETLStatus.FAILED,
+                        message=str(exc),
+                        rows_inserted=quotes_upserted,
+                        rows_failed=1,
+                    )
+        except Exception:
+            logger.exception(
+                "[etl_pipeline] daily quotes load FAILED but could not record audit run"
+            )
+
+        return {
+            "target_date": str(target_date),
+            "quotes_upserted": quotes_upserted,
+            "status": ETLStatus.FAILED,
+            "error": str(exc),
+        }
+
+    with managed_session() as audit_db:
+        etl_repo = ETLRunRepository(audit_db)
+        run_obj = etl_repo.get_by_id(run_id)
+        if run_obj is None:
+            logger.warning(
+                "[etl_pipeline] could not reload ETL run id=%s to record success",
+                run_id,
+            )
+        else:
+            etl_repo.finish_run(
+                run_obj,
+                ETLStatus.SUCCESS,
+                rows_inserted=quotes_upserted,
+                rows_failed=0,
+            )
+
+    summary = {
+        "target_date": str(target_date),
+        "quotes_upserted": quotes_upserted,
+        "status": ETLStatus.SUCCESS,
+    }
+    logger.info("[etl_pipeline] daily quotes load done: %s", summary)
     return summary
 
 
@@ -198,7 +328,32 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
         # Run the actual data load in a separate transaction. Any exception
         # raised here will cause this managed_session() to roll back.
         with managed_session() as db:
-            rows = parse_jsonl_quotes(jsonl_path)
+            parsed_rows = parse_jsonl_quotes(jsonl_path)
+            logger.info(
+                "[etl_pipeline] JSONL parsed: %d raw rows from %s",
+                len(parsed_rows),
+                jsonl_path.name,
+            )
+            if not parsed_rows:
+                logger.warning(
+                    "[etl_pipeline] parse_jsonl_quotes returned 0 rows for %s – "
+                    "nothing to transform or load.",
+                    jsonl_path.name,
+                )
+            rows = transform_jsonl_quotes(parsed_rows, source_name=jsonl_path.name)
+            if not rows:
+                logger.warning(
+                    "[etl_pipeline] transform_jsonl_quotes returned 0 rows for %s – "
+                    "loader will not insert any data.",
+                    jsonl_path.name,
+                )
+            else:
+                logger.info(
+                    "[etl_pipeline] transform_jsonl_quotes produced %d rows; "
+                    "sample keys: %s",
+                    len(rows),
+                    list(rows[0].keys()),
+                )
             rows_inserted = load_intraday_quotes(db, rows)
 
     except Exception as exc:
@@ -210,7 +365,7 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
             with managed_session() as audit_db:
                 etl_repo = ETLRunRepository(audit_db)
                 # Reload the run ORM instance from the new session by id
-                run_obj = audit_db.get(ETLRun, run_id)
+                run_obj = etl_repo.get_by_id(run_id)
                 if run_obj is None:
                     logger.warning(
                         "[etl_pipeline] could not reload ETL run id=%s to record failure",
@@ -241,7 +396,7 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
     with managed_session() as audit_db:
         etl_repo = ETLRunRepository(audit_db)
         # Reload the run ORM instance by id before finishing
-        run_obj = audit_db.get(ETLRun, run_id)
+        run_obj = etl_repo.get_by_id(run_id)
         if run_obj is None:
             logger.warning(
                 "[etl_pipeline] could not reload ETL run id=%s to record success",
