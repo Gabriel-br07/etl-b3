@@ -159,11 +159,14 @@ class AssetRepository:
         """Return a page of assets and the total count."""
         base = select(DimAsset)
         if q:
-            pattern = f"%{q.upper()}%"
+            # Escape SQL LIKE metacharacters so that literal '%' and '_'
+            # in the search term are not treated as wildcards.
+            escaped = q.upper().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
             base = base.where(
                 or_(
-                    func.upper(DimAsset.ticker).like(pattern),
-                    func.upper(DimAsset.asset_name).like(pattern),
+                    func.upper(DimAsset.ticker).like(pattern, escape="\\"),
+                    func.upper(DimAsset.asset_name).like(pattern, escape="\\"),
                 )
             )
         total = self.db.execute(
@@ -200,6 +203,7 @@ class AssetRepository:
                 "asset_name": stmt.excluded.asset_name,
                 "isin": stmt.excluded.isin,
                 "segment": stmt.excluded.segment,
+                "instrument_type": stmt.excluded.instrument_type,
                 "source_file_date": stmt.excluded.source_file_date,
                 "updated_at": func.now(),
             },

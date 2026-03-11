@@ -109,11 +109,18 @@ def _trim_strings(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _parse_date_column(series: pl.Series) -> pl.Series:
-    """Try multiple date formats to parse a string date column."""
+    """Try multiple date formats to parse a string date column.
+
+    Uses ``strict=True`` so that a format that does not match any non-null
+    value raises an exception and allows the next format to be tried.  With
+    ``strict=False`` Polars silently returns ``null`` for non-matching values
+    instead of raising, which would cause the function to always return the
+    result of the first format and never fall back to later formats.
+    """
     formats = ["%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%Y%m%d"]
     for fmt in formats:
         try:
-            return series.str.to_date(fmt, strict=False)
+            return series.str.to_date(fmt, strict=True)
         except Exception:  # noqa: BLE001
             continue
     return series.cast(pl.Date, strict=False)
@@ -574,7 +581,14 @@ def transform_jsonl_quotes(rows: list[dict], source_name: str = "") -> list[dict
             return None
 
     def _to_datetime(v) -> datetime | None:
-        """Parse v into a timezone-aware UTC datetime."""
+        """Parse v into a timezone-aware UTC datetime.
+
+        Time-only formats (``%H:%M:%S``, ``%H:%M``) are intentionally
+        excluded: they produce ``datetime(1900, 1, 1, …)`` which would be
+        stored as a bogus ``1900-01-01`` trade date.  Callers that have
+        time-only strings should combine them with a known trade date before
+        calling this function (see ``_build_quoted_at`` in the JSONL parser).
+        """
         if isinstance(v, datetime):
             if v.tzinfo is None:
                 return v.replace(tzinfo=timezone.utc)
@@ -586,8 +600,6 @@ def transform_jsonl_quotes(rows: list[dict], source_name: str = "") -> list[dict
             "%Y-%m-%dT%H:%M:%S",
             "%Y-%m-%dT%H:%M:%SZ",
             "%Y-%m-%dT%H:%M:%S%z",
-            "%H:%M:%S",
-            "%H:%M",
         ):
             try:
                 dt = datetime.strptime(s, fmt)

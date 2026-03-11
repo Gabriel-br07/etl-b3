@@ -410,3 +410,78 @@ def test_transform_jsonl_quotes_comma_decimal_in_string_price():
     assert len(out) == 1
     assert out[0]["close_price"] == Decimal("62.30")
 
+
+# ---------------------------------------------------------------------------
+# Regression tests for specific bug fixes
+# ---------------------------------------------------------------------------
+
+
+def test_parse_date_column_br_format():
+    """_parse_date_column must fall back to %d/%m/%Y when dates are in BR format.
+
+    Previously strict=False caused the first format (%Y-%m-%d) to return a
+    series of null values without raising, so Brazilian-format dates like
+    "14/06/2024" were silently lost.
+    """
+    from app.etl.transforms.b3_transforms import _parse_date_column
+    import polars as pl
+
+    series = pl.Series(["14/06/2024", "15/06/2024"])
+    result = _parse_date_column(series)
+    assert result[0] == date(2024, 6, 14)
+    assert result[1] == date(2024, 6, 15)
+
+
+def test_parse_date_column_yyyymmdd_format():
+    """_parse_date_column must fall back to %Y%m%d format."""
+    from app.etl.transforms.b3_transforms import _parse_date_column
+    import polars as pl
+
+    series = pl.Series(["20240614", "20240615"])
+    result = _parse_date_column(series)
+    assert result[0] == date(2024, 6, 14)
+    assert result[1] == date(2024, 6, 15)
+
+
+def test_transform_trades_parses_br_date_format():
+    """transform_trades must correctly parse trade_date in dd/mm/yyyy format."""
+    df = pl.DataFrame({
+        "ticker": ["PETR4"],
+        "trade_date": ["14/06/2024"],
+        "last_price": ["38.45"],
+    })
+    rows = transform_trades(df, "NegociosConsolidados_14-06-2024.csv")
+    assert len(rows) == 1
+    assert rows[0]["trade_date"] == date(2024, 6, 14)
+
+
+def test_transform_daily_quotes_parses_br_date_format():
+    """transform_daily_quotes must correctly parse trade_date in dd/mm/yyyy format."""
+    df = pl.DataFrame({
+        "ticker": ["PETR4"],
+        "trade_date": ["14/06/2024"],
+        "last_price": ["38.45"],
+    })
+    rows = transform_daily_quotes(df, "negocios_20240614.csv")
+    assert len(rows) == 1
+    assert rows[0]["trade_date"] == date(2024, 6, 14)
+
+
+def test_transform_jsonl_quotes_time_only_string_is_skipped():
+    """transform_jsonl_quotes must not accept time-only strings as quoted_at.
+
+    A time-only string like "10:30:00" produces datetime(1900, 1, 1, ...)
+    which is a bogus trade date. Such rows must be skipped rather than
+    written to the DB with an incorrect 1900-01-01 date.
+    """
+    rows = [{
+        "ticker": "PETR4",
+        "time": "10:30:00",  # time-only string – no date part
+        "trade_date": date(2024, 6, 14),
+        "close_price": Decimal("38.45"),
+        "price_fluctuation_pct": None,
+    }]
+    out = transform_jsonl_quotes(rows)
+    # Row must be skipped because quoted_at cannot be parsed from a time-only value.
+    assert out == []
+
