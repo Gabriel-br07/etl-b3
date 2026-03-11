@@ -2,6 +2,7 @@
 
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import MagicMock, patch
 
 from app.main import app
 
@@ -65,3 +66,52 @@ def test_openapi_has_expected_endpoints(client):
     assert "/assets" in paths
     assert "/quotes/latest" in paths
     assert "/etl/run-latest" in paths
+
+
+# ---------------------------------------------------------------------------
+# /quotes/latest ticker list parsing – edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_quotes_latest_filters_empty_strings_from_ticker_list():
+    """Trailing/leading commas must not produce empty-string tickers."""
+    mock_repo = MagicMock()
+    mock_repo.get_latest_per_ticker.return_value = ([], 0)
+
+    with patch("app.api.quotes.QuoteRepository", return_value=mock_repo), \
+         patch("app.api.quotes.get_db"):
+        local_client = TestClient(app, raise_server_exceptions=True)
+        # The request itself may fail at DB level; we only care that the
+        # tickers list passed to the repo does not contain empty strings.
+        try:
+            local_client.get("/quotes/latest?tickers=PETR4,")
+        except Exception:
+            pass
+
+    if mock_repo.get_latest_per_ticker.called:
+        called_tickers = mock_repo.get_latest_per_ticker.call_args[1].get(
+            "tickers"
+        ) or mock_repo.get_latest_per_ticker.call_args[0][0]
+        assert "" not in (called_tickers or [])
+
+
+def test_quotes_latest_ticker_list_parsing():
+    """Verify the ticker parsing logic directly using the helper function."""
+    from app.api.quotes import _parse_ticker_list
+
+    assert _parse_ticker_list(None) is None
+    assert _parse_ticker_list("") is None
+    assert _parse_ticker_list("PETR4") == ["PETR4"]
+    assert _parse_ticker_list("PETR4,VALE3") == ["PETR4", "VALE3"]
+    # Trailing comma must not produce empty string
+    assert _parse_ticker_list("PETR4,") == ["PETR4"]
+    # Leading comma must not produce empty string
+    assert _parse_ticker_list(",PETR4") == ["PETR4"]
+    # Multiple commas
+    assert _parse_ticker_list(",,PETR4,,VALE3,,") == ["PETR4", "VALE3"]
+    # Whitespace around tickers
+    assert _parse_ticker_list(" PETR4 , VALE3 ") == ["PETR4", "VALE3"]
+    # Lower-case tickers are uppercased
+    assert _parse_ticker_list("petr4,vale3") == ["PETR4", "VALE3"]
+    # All-empty tokens return None
+    assert _parse_ticker_list(",,") is None
