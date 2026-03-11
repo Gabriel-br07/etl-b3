@@ -4,11 +4,13 @@ import pytest
 
 # Make FastAPI/TestClient optional: do not skip the entire test session when it's absent.
 TestClient = None
+_TESTCLIENT_SKIP_REASON = None
 try:
     from fastapi.testclient import TestClient as _TestClient  # type: ignore
     TestClient = _TestClient
-except Exception:
+except (ImportError, ModuleNotFoundError) as exc:  # only catch import-related errors
     TestClient = None
+    _TESTCLIENT_SKIP_REASON = f"TestClient import error: {exc!r}"
 
 _app = None
 _APP_AVAILABLE = False
@@ -29,7 +31,7 @@ except (ImportError, ModuleNotFoundError) as exc:  # only catch import-related e
 def client():
     """FastAPI test client (no real DB required for unit tests)."""
     if not _APP_AVAILABLE or TestClient is None:
-        pytest.skip(_APP_SKIP_REASON or "FastAPI app unavailable (missing dependency)")
+        pytest.skip(_APP_SKIP_REASON or _TESTCLIENT_SKIP_REASON or "FastAPI app unavailable (missing dependency)")
     return TestClient(_app, raise_server_exceptions=False)
 
 
