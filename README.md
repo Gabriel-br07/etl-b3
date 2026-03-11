@@ -23,19 +23,65 @@ scheduler (Docker container)
   |      run_b3_scraper.py          -> cadastro_instrumentos_YYYYMMDD.normalized.csv
   |      run_b3_scraper_negocios.py -> negocios_consolidados_YYYYMMDD.normalized.csv
   |
-  +--> DB load: instruments + trades
-  |      dim_assets (upsert)
-  |      fact_daily_trades (upsert)
+  +--> DB load: instruments + trades   (pipeline.py: run_instruments_and_trades_pipeline)
+  |      dim_assets        — upsert ON CONFLICT (ticker)
+  |      fact_daily_trades — upsert ON CONFLICT (ticker, trade_date)
   |
   +--> 25-min quote loop
          run_b3_quote_batch.py -> daily_fluctuation_YYYYMMDDTHHMMSS.jsonl
          |
-         +--> DB load: intraday quotes
+         +--> DB load: intraday quotes  (pipeline.py: run_intraday_quotes_pipeline)
                 fact_quotes (TimescaleDB hypertable, INSERT ON CONFLICT DO NOTHING)
 
-ETL audit trail: etl_runs table records every pipeline execution.
+ETL audit trail: etl_runs table records every pipeline execution (RUNNING → SUCCESS/FAILED).
 API layer (FastAPI): /assets, /quotes, /etl endpoints
 ```
+
+---
+
+## How the load flow works
+
+### Three-transaction audit pattern
+
+Every pipeline run uses **three separate database transactions** to ensure the audit log is always recorded, even when the data load fails:
+
+```
+Transaction 1 (audit start)
+  └─ INSERT etl_runs (status=RUNNING) → commit → store run_id
+
+Transaction 2 (data load)  ← atomic batch
+  ├─ load_assets(db, rows)   — upsert dim_assets
+  ├─ load_trades(db, rows)   — upsert fact_daily_trades
+  └─ commit  (or rollback on ANY exception — no partial commits)
+
+Transaction 3 (audit finish) ← independent of transaction 2
+  └─ UPDATE etl_runs SET status=SUCCESS/FAILED → commit
+```
+
+Key properties:
+- **Atomicity**: if transaction 2 raises any exception, the whole batch rolls back. No partial rows are committed.
+- **Audit isolation**: transaction 3 always runs in its own session, so a data failure does not prevent recording `status=FAILED` in `etl_runs`.
+- **Idempotency**: upsert semantics (ON CONFLICT DO UPDATE / DO NOTHING) mean reprocessing the same file is safe — it updates existing rows rather than duplicating them.
+
+### Entry points
+
+| Function | Module | Writes to |
+|---|---|---|
+| `run_instruments_and_trades_pipeline(csv, trades, date)` | `app/etl/orchestration/pipeline.py` | `dim_assets`, `fact_daily_trades`, `etl_runs` |
+| `run_intraday_quotes_pipeline(jsonl_path)` | `app/etl/orchestration/pipeline.py` | `fact_quotes`, `etl_runs` |
+
+### Loaders and repositories
+
+```
+pipeline.py
+  └─ db_loader.py
+       ├─ load_assets(db, rows)           → AssetRepository.upsert_many()
+       ├─ load_trades(db, rows)           → TradeRepository.upsert_many()
+       ├─ load_daily_quotes(db, rows)     → QuoteRepository.upsert_many()   (legacy)
+       └─ load_intraday_quotes(db, rows)  → FactQuoteRepository.insert_many()
+```
+
+Repositories **never call `db.commit()`** — the caller (`managed_session`) commits once at the end of the block to provide atomicity across all repository calls.
 
 ---
 
@@ -63,7 +109,7 @@ API layer (FastAPI): /assets, /quotes, /etl endpoints
 │   │   ├── ingestion/   # file adapters (local, remote), ticker filter
 │   │   ├── loaders/     # db_loader.py: load_assets, load_trades, load_intraday_quotes
 │   │   ├── orchestration/
-│   │   │   ├── pipeline.py     # standalone ETL pipeline (used by scheduler)
+│   │   │   ├── pipeline.py     # ← PRIMARY: standalone ETL pipeline (used by scheduler + API)
 │   │   │   ├── flow.py         # Prefect-based flow (optional, for Prefect deployments)
 │   │   │   └── csv_resolver.py # CSV discovery with retry/fallback
 │   │   ├── parsers/     # instruments_parser, trades_parser, jsonl_quotes_parser
@@ -83,10 +129,11 @@ API layer (FastAPI): /assets, /quotes, /etl endpoints
 │   ├── scheduler.py         # main orchestrator loop
 │   └── initdb/
 │       └── 01_timescaledb.sql  # CREATE EXTENSION timescaledb (auto-run by Postgres)
-├── scripts/             # CLI scripts: run_b3_scraper.py, run_b3_quote_batch.py, ...
-├── tests/               # pytest tests (127 unit tests, no real DB required)
-├── compose.yaml         # Docker Compose: db (TimescaleDB) + scheduler
-├── Dockerfile           # scheduler image
+├── scripts/             # CLI scripts: run_etl.py, run_b3_scraper.py, run_b3_quote_batch.py
+├── tests/               # pytest tests (240 unit tests, no real DB required)
+├── .env.example         # environment variable reference — copy to .env for local dev
+├── compose.yaml         # Docker Compose: db (TimescaleDB) + scheduler [+ api profile]
+├── Dockerfile           # unified scraper/scheduler/api image
 └── pyproject.toml
 ```
 
@@ -94,20 +141,24 @@ API layer (FastAPI): /assets, /quotes, /etl endpoints
 
 ## Environment variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `DATABASE_URL` | `postgresql://etlb3:etlb3pass@localhost:5432/etlb3` | PostgreSQL connection string |
-| `RUN_MIGRATIONS_ON_STARTUP` | `true` | Run `alembic upgrade head` on scheduler start |
-| `DAILY_RUN_HOUR` | `20` | Hour to trigger daily scrapers |
-| `DAILY_RUN_MINUTE` | `0` | Minute to trigger daily scrapers |
-| `SCRAPER_INTERVAL_SECONDS` | `1500` | Quote loop cycle length (25 min) |
-| `B3_DATA_DIR` | `/app/data/raw` | Root raw-data directory |
-| `LOG_LEVEL` | `INFO` | Python logging level |
-| `PLAYWRIGHT_HEADLESS` | `true` | Run browser headless |
-| `DB_POOL_SIZE` | `5` | SQLAlchemy engine pool size: number of persistent DB connections to keep in the pool. Tune upward for higher concurrency/workers. |
-| `DB_MAX_OVERFLOW` | `10` | SQLAlchemy engine max overflow: number of additional connections to open beyond `DB_POOL_SIZE` when demand spikes. Set to 0 to prevent overflow. |
+Copy `.env.example` to `.env` and adjust for your environment.
 
-Copy `.env.example` to `.env` for local development (see below).
+| Variable | Local default | Docker value | Description |
+|---|---|---|---|
+| `DATABASE_URL` | `postgresql://etlb3:etlb3pass@localhost:5432/etlb3` | `postgresql://etlb3:etlb3pass@db:5432/etlb3` | PostgreSQL connection string |
+| `APP_ENV` | `development` | `production` | Controls SQL echo and log verbosity |
+| `DB_POOL_SIZE` | `5` | `5` | SQLAlchemy connection pool size |
+| `DB_MAX_OVERFLOW` | `10` | `10` | Additional connections beyond pool_size |
+| `DB_POOL_RECYCLE` | `1800` | `1800` | Recycle connections after N seconds (prevents stale-connection errors) |
+| `RUN_MIGRATIONS_ON_STARTUP` | `true` | `true` | Auto-run `alembic upgrade head` on scheduler start |
+| `DAILY_RUN_HOUR` | `20` | `20` | Hour to trigger daily scrapers |
+| `DAILY_RUN_MINUTE` | `0` | `0` | Minute to trigger daily scrapers |
+| `SCRAPER_INTERVAL_SECONDS` | `1500` | `1500` | Quote loop cycle length (25 min) |
+| `B3_DATA_DIR` | `data/sample` | `/app/data/raw` | Root raw-data directory |
+| `LOG_LEVEL` | `DEBUG` | `INFO` | Python logging level |
+| `PLAYWRIGHT_HEADLESS` | `false` | `true` | Run browser headless |
+
+> **Local vs Docker key difference**: `DATABASE_URL` uses `localhost` locally and the Compose service name `db` inside Docker. Everything else uses the same application code — only env vars differ.
 
 ---
 
@@ -116,12 +167,18 @@ Copy `.env.example` to `.env` for local development (see below).
 ### 1. Install dependencies
 
 ```powershell
-# Windows (uv recommended)
 uv venv
 uv sync --locked
 ```
 
-### 2. Start PostgreSQL + TimescaleDB locally
+### 2. Configure environment
+
+```powershell
+cp .env.example .env
+# Edit .env if needed — defaults work with the Docker db service below
+```
+
+### 3. Start PostgreSQL + TimescaleDB locally
 
 ```powershell
 # Starts only the db service (not the scheduler)
@@ -131,26 +188,10 @@ docker compose up -d db
 This starts `timescale/timescaledb:2.17.2-pg16` on `localhost:5432`.
 The `01_timescaledb.sql` init script enables the TimescaleDB extension automatically on first boot.
 
-### 3. Create a `.env` file
-
-```ini
-DATABASE_URL=postgresql://etlb3:etlb3pass@localhost:5432/etlb3
-APP_ENV=development
-LOG_LEVEL=DEBUG
-```
-
 ### 4. Run Alembic migrations
 
 ```powershell
-# Applies 0001_initial_schema + 0002_schema_v2 (includes hypertable creation)
 alembic upgrade head
-```
-
-Check current migration state:
-
-```powershell
-alembic current
-alembic history
 ```
 
 ### 5. Run the API
@@ -158,28 +199,24 @@ alembic history
 ```powershell
 uvicorn app.main:app --reload
 # Scalar docs: http://localhost:8000/scalar
-# OpenAPI JSON: http://localhost:8000/openapi.json
 ```
 
-### 6. Run scrapers and load data locally
+### 6. Run the ETL pipeline manually (local)
+
+**Option A — CLI script (recommended)**
 
 ```powershell
-# Run daily scrapers (Playwright - needs chromium)
-playwright install chromium
-python scripts/run_b3_scraper.py
-python scripts/run_b3_scraper_negocios.py
+# Auto-discovers CSVs from B3_DATA_DIR (data/sample by default)
+python scripts/run_etl.py
 
-# Run quote batch (auto-discovers instruments CSV)
-python scripts/run_b3_quote_batch.py
+# Explicit paths + date
+python scripts/run_etl.py `
+    --instruments data/raw/b3/boletim_diario/2024-06-14/cadastro_instrumentos_20240614.normalized.csv `
+    --trades      data/raw/b3/boletim_diario/2024-06-14/negocios_consolidados_20240614.normalized.csv `
+    --date        2024-06-14
 ```
 
-After scrapers run, trigger the ETL load manually via the API:
-
-```http
-POST http://localhost:8000/etl/run-latest
-```
-
-Or run the pipeline directly in Python:
+**Option B — Python REPL / notebook**
 
 ```python
 from pathlib import Path
@@ -190,16 +227,40 @@ from app.etl.orchestration.pipeline import (
 )
 
 # Load instruments + trades
-run_instruments_and_trades_pipeline(
+result = run_instruments_and_trades_pipeline(
     instruments_csv=Path("data/raw/b3/boletim_diario/2024-06-14/cadastro_instrumentos_20240614.normalized.csv"),
     trades_file=Path("data/raw/b3/boletim_diario/2024-06-14/negocios_consolidados_20240614.normalized.csv"),
     target_date=date(2024, 6, 14),
 )
+print(result)
+# {'target_date': '2024-06-14', 'assets_upserted': 512, 'trades_upserted': 389, 'status': 'success'}
 
 # Load JSONL intraday quotes
-run_intraday_quotes_pipeline(
+result = run_intraday_quotes_pipeline(
     jsonl_path=Path("data/raw/b3/daily_fluctuation_history/2024-06-14/daily_fluctuation_20240614T100000.jsonl"),
 )
+print(result)
+# {'source_file': 'daily_fluctuation_20240614T100000.jsonl', 'rows_inserted': 7800, 'status': 'success'}
+```
+
+**Option C — HTTP API**
+
+```http
+POST http://localhost:8000/etl/run-latest
+
+POST http://localhost:8000/etl/backfill
+Content-Type: application/json
+
+{"date_from": "2024-06-01", "date_to": "2024-06-14"}
+```
+
+### 7. Run scrapers locally (requires Playwright + Chromium)
+
+```powershell
+playwright install chromium
+python scripts/run_b3_scraper.py
+python scripts/run_b3_scraper_negocios.py
+python scripts/run_b3_quote_batch.py
 ```
 
 ---
@@ -207,7 +268,7 @@ run_intraday_quotes_pipeline(
 ## Running with Docker (full pipeline)
 
 ```powershell
-# Build and start both services (db + scheduler)
+# Build and start db + scheduler
 docker compose build
 docker compose up -d
 
@@ -217,11 +278,20 @@ docker compose logs -f db
 ```
 
 On first start the scheduler will:
-1. Wait for the `db` service healthcheck to pass
-2. Run `alembic upgrade head` automatically (controlled by `RUN_MIGRATIONS_ON_STARTUP=true`)
-3. Wait until the scheduled daily run time, then run the Playwright scrapers
-4. Load instruments + trades into the DB
-5. Start the 25-minute quote loop, loading each JSONL batch into the hypertable
+1. Wait for the `db` service healthcheck to pass (`pg_isready`)
+2. Run `alembic upgrade head` automatically
+3. Wait until the scheduled daily run time (`DAILY_RUN_HOUR:DAILY_RUN_MINUTE`)
+4. Run the Playwright scrapers → produce CSVs
+5. Load instruments + trades into the DB (`dim_assets`, `fact_daily_trades`)
+6. Start the 25-minute quote loop → produce JSONL → load into `fact_quotes`
+
+### Start the optional API service
+
+```powershell
+# Starts db + scheduler + FastAPI (http://localhost:8000)
+docker compose --profile api up -d
+docker compose logs -f api
+```
 
 ### Manual operations inside the running container
 
@@ -229,17 +299,30 @@ On first start the scheduler will:
 # Apply migrations manually
 docker compose exec scheduler /app/.venv/bin/alembic upgrade head
 
+# Run ETL pipeline manually
+docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_etl.py
+
+# With explicit paths
+docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_etl.py \
+    --instruments /app/data/raw/b3/boletim_diario/2026-03-08/cadastro_instrumentos_20260308.normalized.csv \
+    --date 2026-03-08
+
 # Trigger daily scrapers immediately
-docker compose exec scheduler /app/docker/run_daily_batch.sh --date 2024-06-14
+docker compose exec scheduler /app/docker/run_daily_batch.sh
 
 # Run quote batch manually
 docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_b3_quote_batch.py
 
-# Open psql against the DB
+# Open psql
 docker compose exec db psql -U etlb3 -d etlb3
 
+# Check ETL audit log
+docker compose exec db psql -U etlb3 -d etlb3 \
+    -c "SELECT pipeline_name, status, rows_inserted, started_at FROM etl_runs ORDER BY started_at DESC LIMIT 10;"
+
 # Check hypertable info
-docker compose exec db psql -U etlb3 -d etlb3 -c "SELECT * FROM timescaledb_information.hypertables;"
+docker compose exec db psql -U etlb3 -d etlb3 \
+    -c "SELECT * FROM timescaledb_information.hypertables;"
 ```
 
 ### Persistent volumes
@@ -252,7 +335,7 @@ docker compose exec db psql -U etlb3 -d etlb3 -c "SELECT * FROM timescaledb_info
 To reset the database (destructive!):
 
 ```powershell
-docker compose down -v   # removes named volumes
+docker compose down -v
 docker compose up -d
 ```
 
@@ -261,32 +344,37 @@ docker compose up -d
 ## Running tests
 
 ```powershell
-# All unit tests (no DB or browser required)
+# All unit tests (no DB or browser required — 240 tests)
 python -m pytest tests/ -m "not e2e and not live" --tb=short
 
-# Only the new DB integration tests
-python -m pytest tests/test_db_loader.py tests/test_etl_run_repository.py tests/test_pipeline.py tests/test_jsonl_quotes_parser.py -v
+# Load layer + audit tests
+python -m pytest tests/test_load_integration.py -v
+
+# Transaction + pipeline tests
+python -m pytest tests/test_pipeline.py tests/test_db_loader.py tests/test_etl_run_repository.py -v
 ```
+
+Test coverage for the load layer (`tests/test_load_integration.py`):
+- `load_assets` idempotency: upsert twice → same row count
+- `load_trades` conflict-update: `close_price` changes on re-run
+- `load_intraday_quotes` on-conflict-do-nothing: duplicates not inserted
+- `run_instruments_and_trades_pipeline` SUCCESS: audit row has `status=success`, correct row counts
+- `run_instruments_and_trades_pipeline` FAILURE: data rolled back; audit row has `status=failed` with error message
+- `run_intraday_quotes_pipeline` SUCCESS: audit row has `status=success`
+- `run_intraday_quotes_pipeline` FAILURE: data rolled back; audit row has `status=failed`
+- `managed_session` rollback on exception; commit on success; always closes
+- `ETLRunRepository.get_by_id` lookup
 
 ---
 
 ## Alembic migration commands
 
 ```powershell
-# Apply all pending migrations
-alembic upgrade head
-
-# Roll back one step
-alembic downgrade -1
-
-# Show current revision
-alembic current
-
-# Show full history
-alembic history
-
-# Auto-generate a new migration from model changes
-alembic revision --autogenerate -m "describe_change"
+alembic upgrade head        # apply all pending migrations
+alembic downgrade -1        # roll back one step
+alembic current             # show current revision
+alembic history             # show full history
+alembic revision --autogenerate -m "describe_change"  # create migration from model
 ```
 
 ---
@@ -295,8 +383,9 @@ alembic revision --autogenerate -m "describe_change"
 
 - `alembic upgrade head` is safe to run multiple times (idempotent).
 - The TimescaleDB extension is enabled by `docker/initdb/01_timescaledb.sql` which runs automatically on first DB container start.
-- The `fact_quotes` hypertable is created in migration `0002_schema_v2` via `SELECT create_hypertable(...)`, and that migration also runs `CREATE EXTENSION timescaledb` when the extension is available.
-- For local development without the Docker DB, set `DATABASE_URL` to point to a PostgreSQL 14+ instance. TimescaleDB is **recommended** (to get `fact_quotes` as a hypertable), but the migrations are written to run on plain PostgreSQL as well; without TimescaleDB, `fact_quotes` remains a regular Postgres table.
+- The `fact_quotes` hypertable is created in migration `0002_schema_v2` via `SELECT create_hypertable(...)`. The migration works on plain PostgreSQL too — without TimescaleDB, `fact_quotes` is a regular table.
+- `flow.py` (Prefect-based flow) is preserved for teams using a Prefect server. For all other cases — local, Docker, scripts, API — use `pipeline.py` directly or `scripts/run_etl.py`.
+- `DATABASE_URL` is the single source of truth for the database connection. Individual `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` components are documented in `.env.example` as reference.
 
 ---
 

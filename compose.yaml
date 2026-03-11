@@ -2,7 +2,7 @@
 # compose.yaml — etl-b3 stack
 # =============================================================================
 #
-# Architecture: TWO services + ONE shared data volume + ONE db volume.
+# Architecture: TWO core services + ONE optional API service.
 #
 #   db         — TimescaleDB (PostgreSQL 16) with persistent named volume
 #   scheduler  — unified orchestrator that drives the full pipeline:
@@ -10,17 +10,20 @@
 #                  2. run_b3_scraper.py         (BoletimDiarioScraper, Playwright)
 #                  3. run_b3_scraper_negocios.py (NegociosConsolidadosScraper, Playwright)
 #                  4. validate CSV              (cadastro_instrumentos_YYYYMMDD.normalized.csv)
-#                  5. load instruments + trades into DB
-#                  6. loop every 25 min         (run_b3_quote_batch.py → load quotes into DB)
+#                  5. load instruments + trades into DB  (dim_assets, fact_daily_trades)
+#                  6. loop every 25 min         (run_b3_quote_batch.py → fact_quotes)
+#   api        — FastAPI HTTP API (optional, enabled with --profile api)
+#                  Scalar docs at http://localhost:8000/scalar
 #
 # Startup sequence:
-#   db starts → healthcheck passes → scheduler starts
+#   db starts → healthcheck passes → scheduler (and optionally api) start
 #   ENTRYPOINT entrypoint.sh  (runs as root – chowns /app/data → exec scraper)
 #   CMD        scheduler.py   (runs as scraper uid 1001)
 #
 # Quick start:
 #   docker compose build
-#   docker compose up -d
+#   docker compose up -d                        # db + scheduler only
+#   docker compose --profile api up -d         # db + scheduler + API
 #   docker compose logs -f scheduler
 #
 # Run migrations manually (first time or after schema changes):
@@ -28,7 +31,7 @@
 #
 # Manual triggers (while running):
 #   docker compose exec scheduler /app/docker/run_daily_batch.sh
-#   docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_b3_scraper.py
+#   docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_etl.py
 #   docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_b3_quote_batch.py
 # =============================================================================
 
@@ -92,13 +95,53 @@ services:
       HOME: /home/scraper
       PREFECT_HOME: /home/scraper/.prefect
       PREFECT_PROFILES_PATH: /home/scraper/.prefect/profiles.toml
-      # Database connection
+      # Database connection — "db" is the Compose service name
       DATABASE_URL: postgresql://etlb3:etlb3pass@db:5432/etlb3
+      # Connection pool
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "10"
+      DB_POOL_RECYCLE: "1800"
       # Logging
       LOG_LEVEL: INFO
       # Auto-run migrations on startup (set to "false" to skip)
       RUN_MIGRATIONS_ON_STARTUP: "true"
     shm_size: "1gb"
+    volumes:
+      - scraper_data:/app/data
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # API: FastAPI HTTP interface (optional — enable with: --profile api)
+  #
+  # Usage:
+  #   docker compose --profile api up -d
+  #   curl http://localhost:8000/health
+  #   open http://localhost:8000/scalar
+  # ---------------------------------------------------------------------------
+  api:
+    profiles: [api]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: etlb3_api
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      TZ: America/Sao_Paulo
+      APP_ENV: production
+      # Database connection — "db" is the Compose service name
+      DATABASE_URL: postgresql://etlb3:etlb3pass@db:5432/etlb3
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "10"
+      DB_POOL_RECYCLE: "1800"
+      # Shared data volume so the API can read raw files for /etl/run-latest
+      B3_DATA_DIR: /app/data/raw
+      LOG_LEVEL: INFO
+      HOME: /home/scraper
+    ports:
+      - "127.0.0.1:8000:8000"
     volumes:
       - scraper_data:/app/data
     restart: unless-stopped
