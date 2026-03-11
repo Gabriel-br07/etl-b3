@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     # db_pool settings
     db_pool_size: int = 5
     db_max_overflow: int = 10
+    # Recycle connections after this many seconds (prevents "server closed the connection" errors)
+    db_pool_recycle: int = 1800  # 1800 seconds (30 minutes)
 
     # B3 data directory (local fallback mode)
     b3_data_dir: str = "data/sample"
