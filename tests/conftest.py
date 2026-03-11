@@ -2,21 +2,21 @@
 
 import pytest
 
-# Prefer pytest.importorskip so pytest can skip the whole test session
-# if FastAPI is not installed (avoids hiding other runtime errors).
-pytest.importorskip("fastapi")
-
+# Make FastAPI/TestClient optional: do not skip the entire test session when it's absent.
+TestClient = None
 try:
-    from fastapi.testclient import TestClient
+    from fastapi.testclient import TestClient as _TestClient  # type: ignore
+    TestClient = _TestClient
 except Exception:
-    # If TestClient import fails for some other reason, let the module import
-    # continue so we can surface the real error when running pytest. We keep
-    # TestClient import guarded only by importorskip above in normal pytest runs.
-    TestClient = None  # type: ignore
+    TestClient = None
 
-# Try to import the app; only treat import errors as "app unavailable".
+_app = None
+_APP_AVAILABLE = False
+_APP_SKIP_REASON = None
+
+# Try to import the app; treat import errors as "app unavailable" but don't skip tests.
 try:
-    from app.main import app as _app
+    from app.main import app as _app  # type: ignore
     _APP_AVAILABLE = True
     _APP_SKIP_REASON = None
 except (ImportError, ModuleNotFoundError) as exc:  # only catch import-related errors
@@ -28,10 +28,8 @@ except (ImportError, ModuleNotFoundError) as exc:  # only catch import-related e
 @pytest.fixture(scope="session")
 def client():
     """FastAPI test client (no real DB required for unit tests)."""
-    if not _APP_AVAILABLE:
-        # Include the original import error when skipping so real failures aren't hidden.
+    if not _APP_AVAILABLE or TestClient is None:
         pytest.skip(_APP_SKIP_REASON or "FastAPI app unavailable (missing dependency)")
-    from fastapi.testclient import TestClient
     return TestClient(_app, raise_server_exceptions=False)
 
 
