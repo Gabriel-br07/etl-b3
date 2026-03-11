@@ -1,9 +1,3 @@
-from __future__ import annotations
-
-import unicodedata
-import re
-import logging
-
 """Column mapping layer for B3 instrument (CadInstrumento) files.
 
 B3 field names are abbreviated and may change between file versions.
@@ -20,6 +14,12 @@ in the internal lookup. A warning is logged when this happens so maintainers
 are aware of potentially ambiguous headers. The overwrite is intentional to
 keep the left-most (DataFrame) column selection logic in `map_columns` simple.
 """
+
+from __future__ import annotations
+
+import unicodedata
+import re
+import logging
 
 # Restore human-readable mapping keys (accented where appropriate). Ensure no keys that
 # normalize to the same canonical form are repeated (case/accent variants removed).
