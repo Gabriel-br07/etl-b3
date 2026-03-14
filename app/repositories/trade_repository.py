@@ -22,6 +22,42 @@ class TradeRepository:
         )
         return self.db.execute(stmt).scalar_one_or_none()
 
+    def list_trades(
+        self,
+        trade_date: date | None = None,
+        ticker: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[FactDailyTrade], int]:
+        """Return a page of daily trades and the total count.
+
+        Filters (all optional): trade_date (exact), ticker, start_date/end_date range.
+        Ordered by trade_date desc, then ticker.
+        """
+        base = select(FactDailyTrade)
+        if trade_date is not None:
+            base = base.where(FactDailyTrade.trade_date == trade_date)
+        if ticker:
+            base = base.where(FactDailyTrade.ticker == ticker.upper())
+        if start_date is not None:
+            base = base.where(FactDailyTrade.trade_date >= start_date)
+        if end_date is not None:
+            base = base.where(FactDailyTrade.trade_date <= end_date)
+        total = self.db.execute(
+            select(func.count()).select_from(base.subquery())
+        ).scalar_one()
+        items = self.db.execute(
+            base.order_by(
+                FactDailyTrade.trade_date.desc(),
+                FactDailyTrade.ticker,
+            )
+            .limit(limit)
+            .offset(offset)
+        ).scalars().all()
+        return list(items), total
+
     def get_history(
         self,
         ticker: str,
