@@ -29,14 +29,18 @@ FROM python:3.13-slim
 #   gcc / build-essential / python3-dev — C extensions for some deps
 #   libpq-dev         — PostgreSQL client headers (psycopg2)
 #   util-linux        — setpriv, used in docker/entrypoint.sh
+#   procps            — provides ps, for shell diagnostics in run_daily_batch.sh
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
+    bash \
     gcc \
     build-essential \
     python3-dev \
     libpq-dev \
     util-linux \
+    procps \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -59,9 +63,28 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-install-project
 
 COPY . .
+# Ensure shell scripts and python entrypoints have LF line endings and are executable
+# Convert CRLF -> LF for all shell scripts and python scripts that may be executed inside the image,
+# then set the executable bit where appropriate.
+RUN sed -i 's/\r$//' /app/docker/*.sh /app/scripts/*.py || true \
+ && chmod +x /app/docker/*.sh || true
+# Ensure the entrypoint is explicitly copied (helps clarity)
+COPY docker/entrypoint.sh /app/docker/entrypoint.sh
+RUN sed -i 's/\r$//' /app/docker/entrypoint.sh \
+ && chmod +x /app/docker/entrypoint.sh
 RUN uv sync --locked
 
 ENV PATH="/app/.venv/bin:$PATH"
+# Ensure Python can import the top-level `app` package when executing scripts
+ENV PYTHONPATH="/app"
+# Force UTF-8 I/O encoding in Docker (Linux default may be ASCII/ANSI).
+# PYTHONUTF8=1  → activates Python UTF-8 mode (PEP 540): open() defaults to utf-8.
+# PYTHONIOENCODING → ensures stdin/stdout/stderr use utf-8.
+ENV PYTHONUTF8=1
+ENV PYTHONIOENCODING=utf-8
+# Set locale to UTF-8 so C library functions also use UTF-8
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 # ---------------------------------------------------------------------------
 # Playwright runtime environment
@@ -84,7 +107,7 @@ RUN /app/.venv/bin/python -m playwright install-deps chromium
 # before the volume is populated, because Docker merges image layers with the
 # volume at mount time and the scraper user already owns the paths.
 # ---------------------------------------------------------------------------
-RUN groupadd -r scraper && useradd -r -g scraper -u 1001 -d /home/scraper -s /bin/sh scraper \
+RUN groupadd -r scraper && useradd -r -g scraper -u 1001 -d /home/scraper -s /bin/bash scraper \
  && mkdir -p \
     /home/scraper/.prefect \
     "${PLAYWRIGHT_BROWSERS_PATH}" \
