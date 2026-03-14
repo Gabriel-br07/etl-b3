@@ -4,10 +4,14 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from scalar_fastapi import get_scalar_api_reference
 
-from app.api.assets import router as assets_router
-from app.api.etl_router import router as etl_router
-from app.api.health import router as health_router
-from app.api.quotes import router as quotes_router
+from app.api.routes import (
+    assets_router,
+    etl_router,
+    fact_quotes_router,
+    health_router,
+    quotes_router,
+    trades_router,
+)
 from app.core.config import settings
 from app.core.logging import configure_logging
 
@@ -18,15 +22,18 @@ app = FastAPI(
     version=settings.api_version,
     description=(
         "ETL pipeline and data API for B3 public daily market data (Brazil stock exchange). "
-        "Provides access to listed instruments and consolidated daily quotes."
+        "Provides access to listed instruments (assets), daily quotes, daily trades, "
+        "and intraday fact-quotes; plus live delayed data from B3 and ETL triggers."
     ),
     docs_url=None,   # Disable default Swagger UI
     redoc_url=None,  # Disable default ReDoc UI
     openapi_tags=[
         {"name": "Health", "description": "Application health check."},
-        {"name": "Assets", "description": "B3 listed instruments / assets."},
-        {"name": "Quotes", "description": "Daily consolidated quotes."},
-        {"name": "ETL", "description": "ETL pipeline triggers."},
+        {"name": "Assets", "description": "B3 listed instruments / assets (dim_assets)."},
+        {"name": "Quotes", "description": "Daily quotes (DB) and live B3 snapshots."},
+        {"name": "Trades", "description": "Daily consolidated trades (fact_daily_trades)."},
+        {"name": "Fact Quotes", "description": "Intraday quote series from DB (fact_quotes hypertable)."},
+        {"name": "ETL", "description": "ETL pipeline triggers (run-latest, backfill)."},
     ],
 )
 
@@ -37,6 +44,8 @@ app = FastAPI(
 app.include_router(health_router)
 app.include_router(assets_router)
 app.include_router(quotes_router)
+app.include_router(trades_router)
+app.include_router(fact_quotes_router)
 app.include_router(etl_router)
 
 
