@@ -24,7 +24,6 @@ router = APIRouter(prefix="/assets", tags=["Assets"])
     ),
     responses={
         200: {"description": "Paginated list of assets."},
-        404: {"description": "Not used for list; empty list returned when no match."},
     },
 )
 def list_assets(
