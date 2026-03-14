@@ -464,7 +464,7 @@ def run_quote_batch(instruments_csv: Path) -> bool:
             log.error("[scheduler] quote batch stderr:\n%s", _err)
         return False
 
-    return run_with_retry(_invoke, name="b3_quote_batch", attempts=SCRAPER_RETRY_ATTEMPTS, delay_seconds=SCRAPER_RETRY_DELAY_SECONDS)
+    return run_with_retry(_invoke, name="b3_quote_batch")
 
 
 # ---------------------------------------------------------------------------

@@ -349,10 +349,11 @@ def _validate_normalized_csv(dest_path: Path, table_key: Optional[str], token_de
     # Unified validation: both table types use token-aware detection; if token_detected
     # was True we expect tokens in the header. If token_detected is False we fall
     # back to positional/heuristic checks (ensure header does not look like a data row).
+    # Use normalized tokens so headers with accents (e.g. "Preço") match "preco" in joined.
     if table_key in ("negocios_consolidados", "cadastro_instrumentos"):
-        expected_tokens = _EXPECTED_NEGOCIOS_TOKENS if table_key == "negocios_consolidados" else _EXPECTED_INSTRUMENTS_TOKENS
+        normed_tokens = _NORMED_NEGOCIOS_TOKENS if table_key == "negocios_consolidados" else _NORMED_INSTRUMENTS_TOKENS
         if token_detected:
-            if not any(tok in joined for tok in expected_tokens):
+            if not any(tok in joined for tok in normed_tokens):
                 raise ValueError(
                     f"{table_key} normalized file header did not contain expected tokens. Header: {header}"
                 )
@@ -362,7 +363,7 @@ def _validate_normalized_csv(dest_path: Path, table_key: Optional[str], token_de
             )
         else:
             # Positional fallback: ensure the header is not actually a data row
-            if _looks_like_data_row(header) and not any(tok in joined for tok in expected_tokens):
+            if _looks_like_data_row(header) and not any(tok in joined for tok in normed_tokens):
                 raise ValueError(
                     f"{table_key} normalized file header appears to be a data row: {header}"
                 )
