@@ -98,16 +98,30 @@ def _read_text_with_fallback(path: Path, encodings: Iterable[str] = ("utf-8-sig"
 
     Raises UnicodeDecodeError only if all attempts failed.
     """
-    last_exc: Optional[Exception] = None
+    last_exc: Optional[UnicodeDecodeError] = None
     for enc in encodings:
         try:
             text = path.read_text(encoding=enc)
             return text, enc
-        except Exception as exc:  # narrow to Exception to allow OSError propagate separately
+        except UnicodeDecodeError as exc:
+            # Only catch decoding errors to try the next encoding; let I/O errors propagate.
             last_exc = exc
             continue
-    raise UnicodeDecodeError("utf-8", b"", 0, 1, f"Unable to decode {path} using fallbacks: {encodings}") from last_exc
-
+    if last_exc is not None:
+        raise UnicodeDecodeError(
+            "utf-8",
+            b"",
+            0,
+            1,
+            f"Unable to decode {path} using fallbacks: {encodings}",
+        ) from last_exc
+    raise UnicodeDecodeError(
+        "utf-8",
+        b"",
+        0,
+        1,
+        f"Unable to decode {path} using fallbacks: {encodings}",
+    )
 
 # --------------------- CSV detection & normalization helpers ---------------------
 

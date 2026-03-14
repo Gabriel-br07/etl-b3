@@ -254,8 +254,8 @@ def transform_trades(
             "name that should map to 'ticker'. Available columns: %s",
             df.columns,
         )
-        # Fail-fast: raise error so upstream ETL records failure instead of silently continuing
-        # Return empty result so callers can handle missing data without an exception
+        # Log and return an empty result so callers can treat this input as having no usable data
+        # without raising an exception; the pipeline can decide how to handle this condition.
         return []
 
     # ------------------------------------------------------------------ #
@@ -385,8 +385,8 @@ def transform_daily_quotes(
             "Available columns: %s",
             df.columns,
         )
-        # Fail-fast to make errors explicit
-        # Return empty list so callers can handle missing data without an exception
+        # Log error and stop processing this file; callers handle missing data
+        # by receiving an empty list instead of an exception.
         return []
 
     # ------------------------------------------------------------------ #

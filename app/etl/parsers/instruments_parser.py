@@ -19,7 +19,7 @@ _SEPARATORS = [";", ",", "\t", "|"]
 
 # Minimum number of columns the real B3 instruments header must have.
 # Both known format variants have ≥ 4 columns.
-_MIN_HEADER_COLS = 3
+_MIN_HEADER_COLS = 4
 
 # Known header tokens drawn from INSTRUMENT_COLUMN_MAP keys (normalized to lowercase).
 # At least one of these must appear in the header row for the parse to proceed.

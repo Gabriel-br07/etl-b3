@@ -87,12 +87,21 @@ def run_instruments_and_trades_pipeline(
             instruments_df = parse_instruments_csv(instruments_csv)
 
             if len(instruments_df) == 0:
-                raise ValueError(
-                    f"[etl_pipeline] instruments parser returned 0 rows from {instruments_csv}. "
-                    "This means the CSV header did not match any known column mapping. "
-                    "Check that the normalized CSV starts at the real header row and not "
-                    "at a preamble/descriptive line."
-                )
+                # Distinguish between a likely header-mapping failure (no columns)
+                # and a valid header with zero data rows.
+                if getattr(instruments_df, "columns", None) is not None and len(instruments_df.columns) == 0:
+                    raise ValueError(
+                        f"[etl_pipeline] instruments parser returned 0 rows and 0 columns from {instruments_csv}. "
+                        "This suggests the CSV header did not match any known column mapping. "
+                        "Check that the normalized CSV starts at the real header row and not "
+                        "at a preamble/descriptive line."
+                    )
+                else:
+                    raise ValueError(
+                        f"[etl_pipeline] instruments parser returned 0 data rows from {instruments_csv}. "
+                        "The file may be empty, contain only a header, or all rows may have been filtered "
+                        "out by upstream normalization."
+                    )
 
             asset_rows = transform_instruments(instruments_df, target_date)
 

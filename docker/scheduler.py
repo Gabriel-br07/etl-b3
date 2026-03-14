@@ -79,11 +79,16 @@ def run_migrations() -> bool:
     """
     log.info("[scheduler] running Alembic migrations (alembic upgrade head)")
 
-    # If alembic is not installed or not in PATH, log and return False
+    # If alembic is not installed or not in PATH, treat this as a fatal error
+    # when RUN_MIGRATIONS is enabled, since migrations cannot be applied.
     try:
         which = subprocess.run(["which", ALEMBIC], capture_output=True, text=True)
         if which.returncode != 0:
-            log.warning("[scheduler] alembic not found in PATH; skipping migrations")
+            log.error(
+                "[scheduler] alembic binary '%s' not found in PATH; "
+                "cannot run required migrations and will abort startup",
+                ALEMBIC,
+            )
             return False
     except Exception:
         # Best-effort: continue and let subprocess.show error
@@ -402,7 +407,7 @@ def run_with_retry(func: Callable[[], Any], *, name: str, attempts: int = SCRAPE
         except Exception as exc:
             elapsed = int(time.monotonic() - start)
             log.error("[scheduler] scraper=%s attempt=%d/%d failed (exception) elapsed=%ds: %s", name, attempt, total, elapsed, exc)
-            log.debug("[scheduler] scraper=%s exception details", name, exc, exc_info=True)
+            log.debug("[scheduler] scraper=%s exception details", name, exc_info=True)
             ok = False
         else:
             elapsed = int(time.monotonic() - start)
