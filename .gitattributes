@@ -1,0 +1,7 @@
+# Ensure shell scripts and python scripts use LF endings in the repo
+*.sh text eol=lf
+*.py text eol=lf
+*.pyw text eol=lf
+Dockerfile text eol=lf
+compose.yaml text eol=lf
+

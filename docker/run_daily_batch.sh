@@ -1,24 +1,28 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # =============================================================================
-# docker/run_daily_batch.sh — daily Playwright scraper runner
+# docker/run_daily_batch.sh — daily Playwright scraper runner (simplified)
 # =============================================================================
+# Responsibilities:
+#  - Run the two daily Playwright scrapers sequentially
+#  - Emit clear logs and return non-zero exit code if any scraper fails
+#  - Retry each scraper individually on transient failures
 #
-# Runs the two B3 daily scrapers sequentially:
-#   1. run_b3_scraper.py          (BoletimDiarioScraper — cadastro de instrumentos)
-#   2. run_b3_scraper_negocios.py (NegociosConsolidadosScraper — negócios consolidados)
-#
-# Exits 0 only if both scrapers succeeded.
-#
-# Usage:
-#   /app/docker/run_daily_batch.sh [--date YYYY-MM-DD]
-#
-# Debug single scraper:
-#   docker compose exec scheduler /app/.venv/bin/python \
-#       /app/scripts/run_b3_scraper.py --date 2024-06-14
+# NOTE: ETL invocation (discovery + load) has been intentionally removed from
+# this script. `docker/scheduler.py` is the authoritative orchestrator and
+# will run `scripts/run_etl.py` after verifying CSV availability.
 # =============================================================================
-set -eu
+set -euo pipefail
+IFS=$'\n\t'
 
-PYTHON=/app/.venv/bin/python
+# Use python from the PATH (Dockerfile sets /app/.venv/bin on PATH)
+PYTHON=${PYTHON:-python}
+# Retry configuration (can be overridden in environment)
+SCRAPER_RETRY_ATTEMPTS=${SCRAPER_RETRY_ATTEMPTS:-${RETRY_COUNT:-3}}
+SCRAPER_RETRY_DELAY_SECONDS=${SCRAPER_RETRY_DELAY_SECONDS:-${RETRY_DELAY_SECONDS:-15}}
+
+TS() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+
+echo "[$(TS)] [daily_batch] starting scrapers  PYTHON=${PYTHON}  shell=$(ps -p $$ -o comm=)"
 
 # ---------------------------------------------------------------------------
 # Parse --date argument
@@ -29,14 +33,14 @@ while [ "$#" -gt 0 ]; do
         --date)
             if [ "$#" -lt 2 ]; then
                 echo "Usage: $0 [--date YYYY-MM-DD]" >&2
-                exit 1
+                exit 2
             fi
             _DATE_ARG="$2"
             shift 2
             ;;
         *)
             echo "[daily_batch] unknown argument: $1" >&2
-            exit 1
+            exit 2
             ;;
     esac
 done
@@ -49,40 +53,66 @@ case "$(echo "${PLAYWRIGHT_HEADLESS:-true}" | tr '[:upper:]' '[:lower:]' | tr -d
     *)                   _HEADLESS="--headless"    ;;
 esac
 
-TS() { date '+%Y-%m-%dT%H:%M:%S%z'; }
-
-# ---------------------------------------------------------------------------
-# run_scraper NAME SCRIPT
-# All arguments are properly quoted — no word-splitting risk.
-# ---------------------------------------------------------------------------
-run_scraper() {
+run_scraper_once() {
     _name="$1"
     _script="$2"
     _start=$(date +%s)
-    echo "[$(TS)] [daily_batch] starting: ${_name}"
-    _exit=0
 
     if [ -n "${_DATE_ARG}" ]; then
-        "${PYTHON}" "${_script}" "${_HEADLESS}" --date "${_DATE_ARG}" || _exit=$?
+        "${PYTHON}" "${_script}" "${_HEADLESS}" --date "${_DATE_ARG}"
     else
-        "${PYTHON}" "${_script}" "${_HEADLESS}" || _exit=$?
+        "${PYTHON}" "${_script}" "${_HEADLESS}"
     fi
 
-    _elapsed=$(( $(date +%s) - _start ))
-    if [ "${_exit}" -eq 0 ]; then
-        echo "[$(TS)] [daily_batch] PASS: ${_name}  elapsed=${_elapsed}s"
-    else
-        echo "[$(TS)] [daily_batch] FAIL: ${_name}  elapsed=${_elapsed}s  exit=${_exit}"
-    fi
-    return "${_exit}"
+    return $?
 }
 
-echo "[$(TS)] [daily_batch] === batch start  date=${_DATE_ARG:-today}  headless=${_HEADLESS} ==="
+run_scraper_with_retry() {
+    _name="$1"
+    _script="$2"
+
+    _attempt=1
+    _final_exit=0
+    while [ ${_attempt} -le ${SCRAPER_RETRY_ATTEMPTS} ]; do
+        echo "[$(TS)] [daily_batch] starting: ${_name} attempt=${_attempt}/${SCRAPER_RETRY_ATTEMPTS}"
+        _start=$(date +%s)
+        if run_scraper_once "${_name}" "${_script}"; then
+            _elapsed=$(( $(date +%s) - _start ))
+            echo "[$(TS)] [daily_batch] PASS: ${_name}  attempt=${_attempt}/${SCRAPER_RETRY_ATTEMPTS} elapsed=${_elapsed}s"
+            _final_exit=0
+            break
+        else
+            _exit=$?
+            _elapsed=$(( $(date +%s) - _start ))
+            echo "[$(TS)] [daily_batch] FAIL: ${_name}  attempt=${_attempt}/${SCRAPER_RETRY_ATTEMPTS} elapsed=${_elapsed}s exit=${_exit}"
+            _final_exit=${_exit}
+            if [ ${_attempt} -lt ${SCRAPER_RETRY_ATTEMPTS} ]; then
+                # exponential backoff: base * 2^(attempt-1)
+                _backoff=$(( SCRAPER_RETRY_DELAY_SECONDS * (2 ** (_attempt - 1)) ))
+                echo "[$(TS)] [daily_batch] scraper=${_name} retrying in ${_backoff}s"
+                sleep ${_backoff}
+            else
+                echo "[$(TS)] [daily_batch] scraper=${_name} exhausted attempts (${_attempt}/${SCRAPER_RETRY_ATTEMPTS})"
+            fi
+        fi
+        _attempt=$(( _attempt + 1 ))
+    done
+
+    return ${_final_exit}
+}
 
 EXIT1=0; EXIT2=0
-run_scraper "b3_boletim_diario"        /app/scripts/run_b3_scraper.py         || EXIT1=$?
-run_scraper "b3_negocios_consolidados" /app/scripts/run_b3_scraper_negocios.py || EXIT2=$?
+run_scraper_with_retry "b3_boletim_diario"        /app/scripts/run_b3_scraper.py         || EXIT1=$?
+run_scraper_with_retry "b3_negocios_consolidados" /app/scripts/run_b3_scraper_negocios.py || EXIT2=$?
 
-echo "[$(TS)] [daily_batch] === batch end  boletim=${EXIT1}  negocios=${EXIT2} ==="
+echo "[$(TS)] [daily_batch] scrapers finished  boletim=${EXIT1}  negocios=${EXIT2}"
 
-[ "${EXIT1}" -eq 0 ] && [ "${EXIT2}" -eq 0 ]
+# Final exit: prefer non-zero exit from scrapers; 0 means all succeeded
+FINAL_EXIT=0
+if [ "${EXIT1}" -ne 0 ]; then
+    FINAL_EXIT=${EXIT1}
+elif [ "${EXIT2}" -ne 0 ]; then
+    FINAL_EXIT=${EXIT2}
+fi
+
+exit ${FINAL_EXIT}

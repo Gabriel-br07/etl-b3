@@ -3,20 +3,21 @@
 # docker/entrypoint.sh — container bootstrap  (runs as root)
 # =============================================================================
 #
-# 1. Creates /app/data tree and /home/scraper/.prefect, fixes ownership
-# 2. Exports HOME / PREFECT_HOME so Prefect never touches /root/.prefect
-# 3. Prints startup diagnostics (user, home, prefect dirs)
-# 4. exec's CMD as scraper (uid 1001) via setpriv
+# Responsibilities:
+# 1. Create /app/data tree and /home/scraper/.prefect, fix ownership
+# 2. Export HOME / PREFECT_HOME so Prefect never touches /root/.prefect
+# 3. Print startup diagnostics (user, home, prefect dirs)
+# 4. Exec CMD as scraper (uid 1001) via setpriv
 #
-# Why HOME must be set explicitly
-# --------------------------------
-# `useradd -r` (system account) sets HOME=/root by default.  setpriv carries
-# the current environment — if HOME is still /root, Prefect will attempt to
-# read /root/.prefect/profiles.toml and raise PermissionError.
-# Setting HOME here (and in the Dockerfile ENV) ensures every exec'd child
-# process sees the correct home directory.
+# NOTE: Long-running tasks such as waiting for the database or running
+# migrations are intentionally moved to `docker/scheduler.py` to provide a
+# single authoritative orchestrator and avoid duplicate work across
+# entrypoint and scheduler.
 # =============================================================================
 set -e
+
+# Debug: list /app/docker to verify entrypoint is present at runtime
+echo "[entrypoint] ls -lah /app/docker:"; ls -lah /app/docker || true
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -86,6 +87,8 @@ chown -R 1001:1001 "${SCRAPER_HOME}"
 export HOME="${SCRAPER_HOME}"
 export PREFECT_HOME="${PREFECT_DIR}"
 export PREFECT_PROFILES_PATH="${PREFECT_DIR}/profiles.toml"
+# Ensure Python can import the top-level package `app` when processes run
+export PYTHONPATH="/app"
 
 # ---------------------------------------------------------------------------
 # Startup diagnostics
@@ -95,13 +98,29 @@ echo "[entrypoint] running as : $(id)"
 echo "[entrypoint] HOME       : ${HOME}"
 echo "[entrypoint] PREFECT_HOME: ${PREFECT_HOME}"
 echo "[entrypoint] PREFECT_PROFILES_PATH: ${PREFECT_PROFILES_PATH}"
+echo "[entrypoint] PYTHONPATH : ${PYTHONPATH}"
 echo "[entrypoint] /home/scraper     : $(ls -la /home/scraper 2>&1 | head -5)"
 echo "[entrypoint] /home/scraper/.prefect: $(ls -la /home/scraper/.prefect 2>&1 | head -3)"
 echo "[entrypoint] /root/.prefect    : $(ls -la /root/.prefect 2>/dev/null || echo '(does not exist — correct)')"
 echo "[entrypoint] --- end diagnostics ---"
 
 # ---------------------------------------------------------------------------
+# NOTE: Database readiness and migrations intentionally removed from entrypoint
+# The scheduler (docker/scheduler.py) is the single place responsible for
+# waiting for the DB and running Alembic migrations. This avoids duplicate
+# work and prevents the entrypoint from performing long blocking operations.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Drop to scraper and exec CMD
 # ---------------------------------------------------------------------------
-echo "[entrypoint] exec as scraper(1001): $*"
-exec setpriv --reuid=1001 --regid=1001 --init-groups -- "$@"
+# Ensure a command was passed from Docker (via CMD or override). If none,
+# fail early with a clear error (prevents `setpriv: No program specified`).
+if [ "$#" -eq 0 ]; then
+    echo "[entrypoint] ERROR: no command specified to execute. Provide a CMD in the Dockerfile or pass a command to 'docker run'." >&2
+    exit 1
+fi
+
+echo "[entrypoint] starting: $*"
+# Use --clear-groups to avoid inheriting root groups; exec so signals propagate
+exec setpriv --reuid=1001 --regid=1001 --clear-groups -- "$@"

@@ -254,6 +254,8 @@ def transform_trades(
             "name that should map to 'ticker'. Available columns: %s",
             df.columns,
         )
+        # Log and return an empty result so callers can treat this input as having no usable data
+        # without raising an exception; the pipeline can decide how to handle this condition.
         return []
 
     # ------------------------------------------------------------------ #
@@ -284,6 +286,7 @@ def transform_trades(
                 file_name,
                 df.columns,
             )
+            # Return empty list instead of raising so callers can skip this input
             return []
 
         df = df.with_columns(pl.lit(derived).alias("trade_date"))
@@ -382,6 +385,8 @@ def transform_daily_quotes(
             "Available columns: %s",
             df.columns,
         )
+        # Log error and stop processing this file; callers handle missing data
+        # by receiving an empty list instead of an exception.
         return []
 
     # ------------------------------------------------------------------ #
@@ -414,6 +419,7 @@ def transform_daily_quotes(
                 file_name,
                 df.columns,
             )
+            # Return empty list instead of raising so upstream callers can skip
             return []
 
         df = df.with_columns(pl.lit(derived).alias("trade_date"))
