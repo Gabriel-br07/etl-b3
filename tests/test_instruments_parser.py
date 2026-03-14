@@ -39,3 +39,4 @@ def test_parse_instruments_asset_name_present(instruments_fixture_path):
 def test_parse_instruments_nonexistent_file_raises():
     with pytest.raises(Exception):
         parse_instruments_csv(Path("/tmp/nonexistent_file.csv"))
+

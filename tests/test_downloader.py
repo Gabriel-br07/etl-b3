@@ -153,7 +153,7 @@ def test_save_download_creates_raw_and_normalized_and_returns_result(tmp_path):
     assert result.file_path == expected_raw
     assert result.normalized_file_path == expected_norm
     assert result.original_file_path == expected_raw
-    assert result.saved_filename == "cadastro_instrumentos_20240614.normalized.csv"
+    assert result.saved_filename == "cadastro_instrumentos_20240614.csv"
     assert result.suggested_filename == "downloaded.csv"
 
     # Conversion should have succeeded for this CSV
@@ -164,3 +164,60 @@ def test_save_download_creates_raw_and_normalized_and_returns_result(tmp_path):
     norm_lines = norm_text.splitlines()
     assert norm_lines[0] == "c1;c2"
     assert norm_lines[1] == "1;2"
+
+
+def test_normalize_negocios_preserves_header_with_blank_line(tmp_path):
+    """Simulate a B3 NegociosConsolidados CSV that has a descriptive first line,
+    a blank second line, and the real header on the third line. Ensure the
+    normalized file begins with the header (not a data row).
+    """
+    mod = load_downloader_module()
+    _normalize_csv_using_stdlib = mod._normalize_csv_using_stdlib
+
+    src = tmp_path / "neg_raw.csv"
+    dest = tmp_path / "neg.normalized.csv"
+
+    content = (
+        "Relatório diário de negociação B3 - metadata\n"
+        "\n"
+        "Instrumento financeiro;Código ISIN;Segmento;Preço de abertura;Preço mínimo\n"
+        "BBSEO330W4;BRBBSE3O0EG2;EQUITY PUT;...;...\n"
+    )
+    src.write_text(content, encoding="utf-8")
+
+    # Should not raise and should preserve the header as first line in normalized
+    _normalize_csv_using_stdlib(src_path=src, dest_path=dest, default_delimiter=";", table_key="negocios_consolidados")
+
+    out = dest.read_text(encoding="utf-8").splitlines()
+    assert out[0].startswith("Instrumento financeiro"), "Normalized file must begin with header"
+
+
+def test_normalize_negocios_raises_when_header_missing(tmp_path):
+    """If the source file lacks a recognizable header, normalization for
+    negocios_consolidados should raise a clear ValueError rather than
+    silently producing a malformed normalized file.
+    """
+    mod = load_downloader_module()
+    _normalize_csv_using_stdlib = mod._normalize_csv_using_stdlib
+
+    src = tmp_path / "bad.csv"
+    dest = tmp_path / "bad.normalized.csv"
+
+    # Build a file where first non-empty line is a data row (no header tokens)
+    content = (
+        "meta line\n"
+        "\n"
+        "BBSEO330W4;BRBBSE3O0EG2;EQUITY PUT;100;99\n"
+        "OTHER;ROW;DATA;101;98\n"
+    )
+    src.write_text(content, encoding="utf-8")
+
+    try:
+        _normalize_csv_using_stdlib(src_path=src, dest_path=dest, default_delimiter=";", table_key="negocios_consolidados")
+        raised = False
+    except ValueError as exc:
+        raised = True
+        assert "negocios_consolidados normalized file header" in str(exc) or "Normalized CSV does not start with a header-like row" in str(exc)
+
+    assert raised, "Normalization must raise ValueError when header is missing for negocios_consolidados"
+
