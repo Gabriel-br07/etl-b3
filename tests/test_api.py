@@ -66,6 +66,10 @@ def test_openapi_has_expected_endpoints(client):
     assert "/assets" in paths
     assert "/quotes/latest" in paths
     assert "/etl/run-latest" in paths
+    # New routes from API refactor (trades, fact-quotes)
+    assert "/trades" in paths
+    assert "/fact-quotes/{ticker}/series" in paths
+    assert "/fact-quotes/{ticker}/days/{trade_date}" in paths
 
 
 # ---------------------------------------------------------------------------
