@@ -61,11 +61,13 @@ def parse_trades_file(path: Path | str) -> pl.DataFrame:
     # Rename to internal names
     rename_map = map_columns(df.columns, TRADE_COLUMN_MAP)
     if not rename_map:
-        logger.warning(
+        logger.error(
             "No columns matched TRADE_COLUMN_MAP for %s. Columns: %s",
             path,
             df.columns,
         )
+        # Fail-fast: raise an error so upstream orchestrator records a failed ETL run
+        raise ValueError(f"Trades CSV header did not match expected columns: {list(df.columns)}")
     logger.info("Mapped trade columns: %s", rename_map)
     df = df.rename(rename_map)
 

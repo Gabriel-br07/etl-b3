@@ -85,7 +85,23 @@ def run_instruments_and_trades_pipeline(
         with managed_session() as db:
             # --- instruments ---
             instruments_df = parse_instruments_csv(instruments_csv)
+
+            if len(instruments_df) == 0:
+                raise ValueError(
+                    f"[etl_pipeline] instruments parser returned 0 rows from {instruments_csv}. "
+                    "This means the CSV header did not match any known column mapping. "
+                    "Check that the normalized CSV starts at the real header row and not "
+                    "at a preamble/descriptive line."
+                )
+
             asset_rows = transform_instruments(instruments_df, target_date)
+
+            if not asset_rows:
+                raise ValueError(
+                    f"[etl_pipeline] transform_instruments returned 0 rows from {instruments_csv}. "
+                    "All rows were filtered out (check ticker/date columns)."
+                )
+
             assets_upserted = load_assets(db, asset_rows)
 
             # --- trades ---
