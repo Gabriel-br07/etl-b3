@@ -78,8 +78,8 @@ def test_quotes_latest_filters_empty_strings_from_ticker_list():
     mock_repo = MagicMock()
     mock_repo.get_latest_per_ticker.return_value = ([], 0)
 
-    with patch("app.api.quotes.QuoteRepository", return_value=mock_repo), \
-         patch("app.api.quotes.get_db"):
+    with patch("app.api.routes.quotes.QuoteRepository", return_value=mock_repo), \
+         patch("app.api.routes.quotes.get_db"):
         local_client = TestClient(app, raise_server_exceptions=True)
         # The request itself may fail at DB level; we only care that the
         # tickers list passed to the repo does not contain empty strings.
@@ -97,7 +97,7 @@ def test_quotes_latest_filters_empty_strings_from_ticker_list():
 
 def test_quotes_latest_ticker_list_parsing():
     """Verify the ticker parsing logic directly using the helper function."""
-    from app.api.quotes import _parse_ticker_list
+    from app.api.routes.quotes import _parse_ticker_list
 
     assert _parse_ticker_list(None) is None
     assert _parse_ticker_list("") is None
