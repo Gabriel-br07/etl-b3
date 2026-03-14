@@ -484,7 +484,7 @@ def _make_quote(ticker: str = "PETR4") -> NormalizedQuote:
 
 def test_route_snapshot_200(api_client):
     with patch(
-        "app.api.quotes.get_daily_fluctuation",
+        "app.api.routes.quotes.get_daily_fluctuation",
         return_value=_make_quote(),
     ):
         resp = api_client.get("/quotes/PETR4/snapshot")
@@ -499,7 +499,7 @@ def test_route_snapshot_200(api_client):
 
 def test_route_snapshot_404(api_client):
     with patch(
-        "app.api.quotes.get_daily_fluctuation",
+        "app.api.routes.quotes.get_daily_fluctuation",
         side_effect=B3TickerNotFoundError("XXXXXX"),
     ):
         resp = api_client.get("/quotes/XXXXXX/snapshot")
@@ -510,7 +510,7 @@ def test_route_snapshot_404(api_client):
     assert detail.get("ticker") == "XXXXXX"
 def test_route_snapshot_503_temporary_block(api_client):
     with patch(
-        "app.api.quotes.get_daily_fluctuation",
+        "app.api.routes.quotes.get_daily_fluctuation",
         side_effect=B3TemporaryBlockError(403, "PETR4"),
     ):
         resp = api_client.get("/quotes/PETR4/snapshot")
@@ -522,7 +522,7 @@ def test_route_snapshot_503_temporary_block(api_client):
 
 def test_route_snapshot_502_unexpected(api_client):
     with patch(
-        "app.api.quotes.get_daily_fluctuation",
+        "app.api.routes.quotes.get_daily_fluctuation",
         side_effect=B3UnexpectedResponseError("bad JSON", status_code=200),
     ):
         resp = api_client.get("/quotes/PETR4/snapshot")
@@ -862,7 +862,7 @@ def test_use_case_get_intraday_series_uppercases_ticker():
 
 def test_route_latest_snapshot_200(api_client):
     with patch(
-        "app.api.quotes.get_latest_snapshot",
+        "app.api.routes.quotes.get_latest_snapshot",
         return_value=_make_latest_snapshot(),
     ):
         resp = api_client.get("/quotes/PETR4")
@@ -879,7 +879,7 @@ def test_route_latest_snapshot_200(api_client):
 
 def test_route_latest_snapshot_404(api_client):
     with patch(
-        "app.api.quotes.get_latest_snapshot",
+        "app.api.routes.quotes.get_latest_snapshot",
         side_effect=B3TickerNotFoundError("XXXXXX"),
     ):
         resp = api_client.get("/quotes/XXXXXX")
@@ -892,7 +892,7 @@ def test_route_latest_snapshot_404(api_client):
 
 def test_route_latest_snapshot_503(api_client):
     with patch(
-        "app.api.quotes.get_latest_snapshot",
+        "app.api.routes.quotes.get_latest_snapshot",
         side_effect=B3TemporaryBlockError(429, "PETR4"),
     ):
         resp = api_client.get("/quotes/PETR4")
@@ -903,7 +903,7 @@ def test_route_latest_snapshot_503(api_client):
 
 def test_route_intraday_series_502(api_client):
     with patch(
-        "app.api.quotes.get_intraday_series",
+        "app.api.routes.quotes.get_intraday_series",
         side_effect=B3UnexpectedResponseError("bad shape", status_code=200),
     ):
         resp = api_client.get("/quotes/PETR4/intraday")
@@ -1376,7 +1376,7 @@ def test_batch_ingestion_empty_lstqtn_writes_empty_price_history(tmp_path):
 
 def test_route_intraday_series_200(api_client):
     with patch(
-        "app.api.quotes.get_intraday_series",
+        "app.api.routes.quotes.get_intraday_series",
         return_value=_make_intraday_series(),
     ):
         resp = api_client.get("/quotes/PETR4/intraday")
@@ -1405,7 +1405,7 @@ def test_route_intraday_series_empty_points(api_client):
         fetched_at=datetime(2024, 6, 14, 9, 0, 0, tzinfo=UTC),
         raw_data=None,
     )
-    with patch("app.api.quotes.get_intraday_series", return_value=empty_series):
+    with patch("app.api.routes.quotes.get_intraday_series", return_value=empty_series):
         resp = api_client.get("/quotes/PETR4/intraday")
 
     assert resp.status_code == 200
@@ -1415,7 +1415,7 @@ def test_route_intraday_series_empty_points(api_client):
 
 def test_route_intraday_series_404(api_client):
     with patch(
-        "app.api.quotes.get_intraday_series",
+        "app.api.routes.quotes.get_intraday_series",
         side_effect=B3TickerNotFoundError("XXXXXX"),
     ):
         resp = api_client.get("/quotes/XXXXXX/intraday")
@@ -1428,7 +1428,7 @@ def test_route_intraday_series_404(api_client):
 
 def test_route_intraday_series_503(api_client):
     with patch(
-        "app.api.quotes.get_intraday_series",
+        "app.api.routes.quotes.get_intraday_series",
         side_effect=B3TemporaryBlockError(403, "PETR4"),
     ):
         resp = api_client.get("/quotes/PETR4/intraday")

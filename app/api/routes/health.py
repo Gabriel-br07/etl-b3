@@ -12,7 +12,11 @@ router = APIRouter(tags=["Health"])
     "/health",
     response_model=HealthResponse,
     summary="Health check",
-    description="Returns the application health status.",
+    description=(
+        "Returns the application health status including version and environment. "
+        "Use this endpoint for liveness/readiness probes."
+    ),
+    responses={200: {"description": "Application is healthy."}},
 )
 def health() -> HealthResponse:
     return HealthResponse(

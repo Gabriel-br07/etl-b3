@@ -34,7 +34,7 @@ scheduler (Docker container)
                 fact_quotes (TimescaleDB hypertable, INSERT ON CONFLICT DO NOTHING)
 
 ETL audit trail: etl_runs table records every pipeline execution (RUNNING → SUCCESS/FAILED).
-API layer (FastAPI): /assets, /quotes, /etl endpoints
+API layer (FastAPI): /assets, /quotes, /trades, /fact-quotes, /health, /etl
 ```
 
 ---
@@ -98,12 +98,60 @@ Repositories **never call `db.commit()`** — the caller (`managed_session`) com
 
 ---
 
+## REST API
+
+The API exposes B3 market data stored in the database plus optional live delayed data from B3. All list endpoints return paginated responses with `total`, `limit`, `offset`, and `items`.
+
+- **Base URL (local):** `http://localhost:8000`
+- **Documentation:** [http://localhost:8000/scalar](http://localhost:8000/scalar) — interactive API reference (Scalar).
+
+### Main routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check (version, environment). |
+| GET | `/assets` | List assets (paginated; optional search `q` by ticker or name). |
+| GET | `/assets/{ticker}` | Get asset by ticker. |
+| GET | `/quotes/latest` | Latest daily quote per ticker (DB). |
+| GET | `/quotes/{ticker}/history` | Historical daily quotes for a ticker (DB). |
+| GET | `/quotes/{ticker}` | Latest intraday snapshot (live B3, delayed). |
+| GET | `/quotes/{ticker}/intraday` | Full intraday series (live B3, delayed). |
+| GET | `/quotes/{ticker}/snapshot` | Legacy delayed quote snapshot (live B3). |
+| GET | `/trades` | List daily trades (filter by `trade_date`, `ticker`, `start_date`/`end_date`). |
+| GET | `/trades/{ticker}/history` | Trade history for a ticker. |
+| GET | `/trades/{ticker}` | Single daily trade (query param `trade_date` required). |
+| GET | `/fact-quotes/{ticker}/series` | Intraday series from DB (query `start`, `end` datetime, `limit`). |
+| GET | `/fact-quotes/{ticker}/days/{trade_date}` | Intraday points for one trade date (DB). |
+| POST | `/etl/run-latest` | Trigger ETL for latest date (local CSV). |
+| POST | `/etl/backfill` | Trigger historical ETL backfill (body: `date_from`, `date_to`). |
+
+### Resources
+
+- **Assets** — B3 listed instruments (`dim_assets`). List with optional search; get by ticker.
+- **Quotes** — Daily quotes from DB (`fact_daily_quotes`) and live delayed snapshots/series from the B3 public API.
+- **Trades** — Daily consolidated trades (`fact_daily_trades`). List with filters; history by ticker; detail by ticker + date.
+- **Fact quotes** — Intraday time-series from DB (`fact_quotes` hypertable). Series by datetime range or by trade date.
+- **Health** — Liveness/readiness; version and environment.
+- **ETL** — Trigger pipeline run or backfill (local mode only via API).
+
+### Example requests
+
+```http
+GET /assets?q=PETR&limit=10
+GET /trades?trade_date=2024-06-14&limit=20
+GET /trades/PETR4?trade_date=2024-06-14
+GET /quotes/PETR4/history?start_date=2024-06-01&end_date=2024-06-14
+GET /fact-quotes/PETR4/days/2024-06-14
+```
+
+---
+
 ## Project structure (high level)
 
 ```
 .
 ├── app/
-│   ├── api/             # FastAPI routers: assets, quotes, etl, health
+│   ├── api/             # FastAPI: app/api/routes/ (assets, quotes, trades, fact_quotes, health, etl)
 │   ├── core/            # config (pydantic-settings), logging, constants
 │   ├── db/              # SQLAlchemy models, engine, session factory
 │   ├── etl/
@@ -198,9 +246,15 @@ alembic upgrade head
 ### 5. Run the API
 
 ```powershell
-uvicorn app.main:app --reload
-# Scalar docs: http://localhost:8000/scalar
+uv run uvicorn app.main:app --reload
 ```
+
+Use `uv run` so that uvicorn runs with the project virtualenv (where FastAPI, scalar_fastapi, etc. are installed). If you run `uvicorn` from a global or conda Python, you may get `ModuleNotFoundError: No module named 'scalar_fastapi'`.
+
+- API base: `http://localhost:8000`
+- Interactive docs: [http://localhost:8000/scalar](http://localhost:8000/scalar)
+
+See [REST API](#rest-api) above for main routes and examples.
 
 ### 6. Run the ETL pipeline manually (local)
 

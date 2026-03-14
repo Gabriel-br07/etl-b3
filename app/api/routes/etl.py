@@ -91,8 +91,14 @@ def _resolve_local_paths(target_date: date) -> tuple[Path, Path | None]:
     summary="Trigger ETL for the latest available date",
     description=(
         "Runs the B3 daily ETL synchronously for today's date (or the latest available "
-        "file in local mode). Returns the pipeline summary including row counts and status."
+        "file in local mode). Returns the pipeline summary including row counts and status. "
+        "Only supports source_mode='local'; for remote use the scheduler or run scripts manually."
     ),
+    responses={
+        200: {"description": "ETL run completed successfully."},
+        404: {"description": "Instruments CSV not found in B3_DATA_DIR."},
+        501: {"description": "source_mode='remote' not supported via API."},
+    },
 )
 def run_latest(
     body: ETLRunRequest = Body(default_factory=ETLRunRequest),
@@ -121,8 +127,13 @@ def run_latest(
     description=(
         "Runs the B3 ETL for a date range using local CSV files. "
         "Iterates day by day synchronously. "
-        "Only processes dates where a CSV file is available locally."
+        "Only processes dates where a CSV file is available locally. "
+        "Only supports source_mode='local'."
     ),
+    responses={
+        200: {"description": "Backfill completed; check results per date."},
+        501: {"description": "source_mode='remote' not supported via API."},
+    },
 )
 def run_backfill(body: ETLBackfillRequest) -> dict:
     if body.source_mode == SourceMode.REMOTE:
@@ -170,4 +181,3 @@ def run_backfill(body: ETLBackfillRequest) -> dict:
         current += timedelta(days=1)
 
     return {"total_dates": len(results), "results": results}
-

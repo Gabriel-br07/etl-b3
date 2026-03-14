@@ -1,15 +1,7 @@
 """Quotes router.
 
-Exposes five endpoints:
-- GET /quotes/latest          – latest DB-persisted quote per ticker.
-- GET /quotes/{ticker}/history – historical DB-persisted quotes for a ticker.
-- GET /quotes/{ticker}/snapshot – live delayed snapshot (legacy, NormalizedQuote).
-- GET /quotes/{ticker}          – live latest snapshot (LatestSnapshotQuote).
-- GET /quotes/{ticker}/intraday – live full intraday series (IntradaySeriesQuote).
-
-The last two endpoints use the real B3 payload shape (BizSts/Msg/TradgFlr/lstQtn)
-and return data sourced from ``b3_public_internal_endpoint``.  Data is always
-delayed (not real-time).
+DB-backed endpoints: GET /quotes/latest, GET /quotes/{ticker}/history.
+Live B3 endpoints: GET /quotes/{ticker}, GET /quotes/{ticker}/snapshot, GET /quotes/{ticker}/intraday.
 """
 
 from datetime import date
@@ -24,7 +16,7 @@ from app.integrations.b3.exceptions import (
     B3UnexpectedResponseError,
 )
 from app.repositories.quote_repository import QuoteRepository
-from app.schemas import DailyQuoteRead
+from app.schemas import DailyQuoteRead, PaginatedResponse
 from app.use_cases.quotes.get_daily_fluctuation import get_daily_fluctuation
 from app.use_cases.quotes.get_intraday_series import get_intraday_series
 from app.use_cases.quotes.get_latest_snapshot import get_latest_snapshot
@@ -33,11 +25,6 @@ router = APIRouter(prefix="/quotes", tags=["Quotes"])
 
 
 def _parse_ticker_list(tickers: str | None) -> list[str] | None:
-    """Parse a comma-separated ticker string into a filtered, uppercased list.
-
-    Returns ``None`` when *tickers* is ``None`` or empty (meaning "all tickers").
-    Empty tokens produced by leading/trailing/consecutive commas are discarded.
-    """
     if not tickers:
         return None
     result = [t for t in (t.strip().upper() for t in tickers.split(",")) if t]
@@ -46,43 +33,71 @@ def _parse_ticker_list(tickers: str | None) -> list[str] | None:
 
 @router.get(
     "/latest",
-    response_model=dict,
-    summary="Latest quotes",
-    description="Return the most recent available daily quote per ticker.",
+    response_model=PaginatedResponse[DailyQuoteRead],
+    summary="Latest quotes (DB)",
+    description=(
+        "Return the most recent available daily quote per ticker from the database (fact_daily_quotes). "
+        "Each item is the latest trade_date for that ticker. "
+        "Optionally filter by a comma-separated list of tickers. "
+        "For live delayed data from B3 use GET /quotes/{ticker} or /quotes/{ticker}/snapshot."
+    ),
+    responses={
+        200: {"description": "Paginated list of latest quotes per ticker."},
+    },
 )
 def get_latest_quotes(
     tickers: str | None = Query(
         None,
-        description="Comma-separated list of tickers, e.g. PETR4,VALE3",
+        description="Comma-separated list of tickers (e.g. PETR4,VALE3). Omit for all tickers.",
     ),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500, description="Maximum number of tickers to return."),
+    offset: int = Query(0, ge=0, description="Number of items to skip."),
     db: Session = Depends(get_db),
-) -> dict:
+) -> PaginatedResponse[DailyQuoteRead]:
     ticker_list = _parse_ticker_list(tickers)
     repo = QuoteRepository(db)
     items, total = repo.get_latest_per_ticker(tickers=ticker_list, limit=limit, offset=offset)
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "items": [DailyQuoteRead.model_validate(q) for q in items],
-    }
+    return PaginatedResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=[DailyQuoteRead.model_validate(q) for q in items],
+    )
 
 
 @router.get(
     "/{ticker}/history",
     response_model=list[DailyQuoteRead],
-    summary="Quote history for a ticker",
-    description="Return historical daily quotes for a specific ticker.",
+    summary="Quote history for a ticker (DB)",
+    description=(
+        "Return historical daily quotes for a specific ticker from the database. "
+        "Optionally filter by start_date and end_date. "
+        "Ordered by trade_date descending. "
+        "Returns 404 if no quotes found for the ticker in the given range."
+    ),
+    responses={
+        200: {"description": "List of daily quotes for the ticker."},
+        404: {"description": "No quotes found for the ticker."},
+    },
 )
 def get_quote_history(
     ticker: str,
-    start_date: date | None = Query(None),
-    end_date: date | None = Query(None),
-    limit: int = Query(365, ge=1, le=1000),
+    start_date: date | None = Query(
+        None,
+        description="Start of date range (YYYY-MM-DD).",
+    ),
+    end_date: date | None = Query(
+        None,
+        description="End of date range (YYYY-MM-DD).",
+    ),
+    limit: int = Query(365, ge=1, le=1000, description="Maximum number of days to return."),
     db: Session = Depends(get_db),
 ) -> list[DailyQuoteRead]:
+    if start_date is not None and end_date is not None and end_date < start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="end_date must be greater than or equal to start_date.",
+        )
     repo = QuoteRepository(db)
     items = repo.get_history(
         ticker=ticker.upper(),
@@ -105,21 +120,18 @@ def get_quote_history(
     response_model=dict,
     summary="Live delayed quote snapshot (B3 public API)",
     description=(
-        "Fetch the latest public delayed quote snapshot for *ticker* directly "
-        "from the B3 internal market-data endpoint.  Data is **always delayed** "
-        "(not real-time) and is sourced from `b3_public_internal_endpoint`.\n\n"
-        "The response is cached in-memory per ticker (configurable TTL, default 5 min)."
+        "Fetch the latest public delayed quote snapshot for the ticker directly "
+        "from the B3 internal market-data endpoint. Data is always delayed (not real-time). "
+        "Response is cached in-memory per ticker (configurable TTL, default 5 min)."
     ),
+    responses={
+        200: {"description": "Delayed quote snapshot from B3."},
+        404: {"description": "Ticker not found on B3."},
+        502: {"description": "Unexpected upstream response from B3."},
+        503: {"description": "B3 temporarily blocking requests (rate-limit)."},
+    },
 )
 def get_quote_snapshot(ticker: str) -> dict:
-    """Return the latest B3 public delayed snapshot for the given ticker.
-
-    HTTP status codes:
-    - 200: success.
-    - 404: ticker not found on B3.
-    - 503: B3 is temporarily blocking requests (rate-limit / 403 / 429).
-    - 502: unexpected upstream error (parse failure, bad JSON, etc.).
-    """
     try:
         quote = get_daily_fluctuation(ticker)
     except B3TickerNotFoundError as exc:
@@ -165,35 +177,24 @@ def get_quote_snapshot(ticker: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Live latest snapshot – real B3 payload shape (LatestSnapshotQuote)
-# ---------------------------------------------------------------------------
-
-
 @router.get(
     "/{ticker}",
     response_model=dict,
     summary="Latest intraday quote snapshot (B3 public API)",
     description=(
-        "Fetch the **latest** intraday quote snapshot for *ticker* directly "
-        "from the B3 public market-data endpoint.  The snapshot is derived "
-        "from the **last item** in `TradgFlr.scty.lstQtn` of the real "
-        "B3 DailyFluctuationHistory response.\n\n"
-        "Data is **always delayed** (not real-time) and is sourced from "
-        "`b3_public_internal_endpoint`.  The response is cached in-memory "
-        "per ticker (configurable TTL, default 5 min).\n\n"
-        "For the full minute-level series use `GET /quotes/{ticker}/intraday`."
+        "Fetch the latest intraday quote snapshot for the ticker from the B3 public market-data endpoint. "
+        "Derived from the last item in the B3 DailyFluctuationHistory response. "
+        "Data is always delayed. Cached in-memory per ticker. "
+        "For the full minute-level series use GET /quotes/{ticker}/intraday."
     ),
+    responses={
+        200: {"description": "Latest intraday snapshot from B3."},
+        404: {"description": "Ticker not found on B3."},
+        502: {"description": "Unexpected upstream response."},
+        503: {"description": "B3 temporarily blocking requests."},
+    },
 )
 def get_ticker_latest_snapshot(ticker: str) -> dict:
-    """Return the latest B3 intraday snapshot for the given ticker.
-
-    HTTP status codes:
-    - 200: success.
-    - 404: ticker not found on B3.
-    - 503: B3 is temporarily blocking requests.
-    - 502: unexpected upstream error.
-    """
     try:
         snapshot = get_latest_snapshot(ticker)
     except B3TickerNotFoundError as exc:
@@ -246,34 +247,24 @@ def get_ticker_latest_snapshot(ticker: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Live intraday series – full lstQtn list (IntradaySeriesQuote)
-# ---------------------------------------------------------------------------
-
-
 @router.get(
     "/{ticker}/intraday",
     response_model=dict,
     summary="Full intraday series (B3 public API)",
     description=(
-        "Fetch the **full minute-level intraday series** for *ticker* directly "
-        "from the B3 public market-data endpoint.  Each point in `points[]` "
-        "corresponds to one item in `TradgFlr.scty.lstQtn` of the real B3 "
-        "DailyFluctuationHistory response.\n\n"
-        "Data is **always delayed** (not real-time).  The response is cached "
-        "in-memory per ticker (configurable TTL, default 5 min).\n\n"
-        "For just the latest snapshot use `GET /quotes/{ticker}`."
+        "Fetch the full minute-level intraday series for the ticker from the B3 public endpoint. "
+        "Each point in points[] corresponds to one item in the B3 DailyFluctuationHistory response. "
+        "Data is always delayed. Cached in-memory per ticker. "
+        "For just the latest snapshot use GET /quotes/{ticker}."
     ),
+    responses={
+        200: {"description": "Full intraday series (points may be empty if market closed)."},
+        404: {"description": "Ticker not found on B3."},
+        502: {"description": "Unexpected upstream response."},
+        503: {"description": "B3 temporarily blocking requests."},
+    },
 )
 def get_ticker_intraday_series(ticker: str) -> dict:
-    """Return the full intraday series for the given ticker.
-
-    HTTP status codes:
-    - 200: success (``points`` may be an empty list if market is closed).
-    - 404: ticker not found on B3.
-    - 503: B3 is temporarily blocking requests.
-    - 502: unexpected upstream error.
-    """
     try:
         series = get_intraday_series(ticker)
     except B3TickerNotFoundError as exc:
@@ -326,4 +317,3 @@ def get_ticker_intraday_series(ticker: str) -> dict:
         "delayed": series.delayed,
         "fetched_at": series.fetched_at.isoformat(),
     }
-
