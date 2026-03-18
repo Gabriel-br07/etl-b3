@@ -219,7 +219,7 @@ GET /fact-quotes/PETR4/days/2024-06-14
 │   └── initdb/
 │       └── 01_timescaledb.sql  # CREATE EXTENSION timescaledb (auto-run by Postgres)
 ├── scripts/             # CLI scripts: run_etl.py, run_b3_scraper.py, run_b3_quote_batch.py
-├── tests/               # pytest tests (240 unit tests, no real DB required)
+├── tests/               # pytest tests (entrypoint-focused; ~138 tests, no real DB)
 ├── .env.example         # environment variable reference — copy to .env for local dev
 ├── compose.yaml         # Docker Compose base: db, scheduler, api (profile)
 ├── compose.override.yaml # Dev overrides: api hot reload + app bind mount (merged automatically)
@@ -481,27 +481,27 @@ docker compose up -d
 
 ## Running tests
 
+Tests are **entrypoint-focused**: they exercise the scheduler, CLI scripts, API routes, and batch quote ingestion with full mocking (no real DB, browser, or external HTTP). Run everything except e2e/live:
+
 ```powershell
-# All unit tests (no DB or browser required — 240 tests)
-python -m pytest tests/ -m "not e2e and not live" --tb=short
+# All unit tests (no DB or browser required — ~138 tests)
+uv run pytest tests/ -m "not e2e and not live" --tb=short
 
-# Load layer + audit tests
-python -m pytest tests/test_load_integration.py -v
-
-# Transaction + pipeline tests
-python -m pytest tests/test_pipeline.py tests/test_db_loader.py tests/test_etl_run_repository.py -v
+# With coverage (pytest-cov; config in pyproject.toml)
+uv run pytest tests/ -m "not e2e and not live" --cov --cov-report=term-missing
 ```
 
-Test coverage for the load layer (`tests/test_load_integration.py`):
-- `load_assets` idempotency: upsert twice → same row count
-- `load_trades` conflict-update: `close_price` changes on re-run
-- `load_intraday_quotes` on-conflict-do-nothing: duplicates not inserted
-- `run_instruments_and_trades_pipeline` SUCCESS: audit row has `status=success`, correct row counts
-- `run_instruments_and_trades_pipeline` FAILURE: data rolled back; audit row has `status=failed` with error message
-- `run_intraday_quotes_pipeline` SUCCESS: audit row has `status=success`
-- `run_intraday_quotes_pipeline` FAILURE: data rolled back; audit row has `status=failed`
-- `managed_session` rollback on exception; commit on success; always closes
-- `ETLRunRepository.get_by_id` lookup
+### Test layout
+
+| Module | Focus |
+|--------|--------|
+| `test_api.py` | FastAPI TestClient: health, docs, OpenAPI, route smoke tests; ETL routes (`/etl/run-latest`, `/etl/backfill`) with mocked pipeline; `/quotes/latest` ticker parsing. |
+| `test_scheduler.py` | `docker/scheduler.py`: `next_daily_run`, `run_with_retry`, migrations, `wait_for_db`, daily scrapers, load instruments/trades, load latest JSONL, quote batch with retry; `main()` exit-on-failure and startup sequence. All with mocked DB/subprocess/sleep. |
+| `test_cli_entrypoints.py` | CLI scripts: `run_b3_quote_batch`, `run_etl`, `run_b3_scraper`, `run_b3_scraper_negocios` — `main()` invokes expected pipelines/scrapers (mocked). |
+| `test_run_daily_batch.py` | Contract for `docker/run_daily_batch.sh`: script exists, syntax (`bash -n`), invokes expected scraper paths, headless/date/retry. |
+| `test_b3_quote_integration.py` | B3 quote client, parsers, cache, use cases, routes (snapshot/latest/intraday); `read_tickers`; batch quote ingestion (JSONL + report, empty ticker list, empty `lstQtn`). |
+
+There is no shared `conftest.py`; API tests use an in-module `client` fixture. Coverage is configured in `pyproject.toml` (`[tool.coverage.run]` / `[tool.coverage.report]`) for `app`, `docker`, and `scripts`.
 
 ---
 
