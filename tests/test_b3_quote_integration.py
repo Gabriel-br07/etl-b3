@@ -1330,6 +1330,35 @@ def test_batch_ingestion_does_not_abort_on_single_failure(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Empty ticker list (entrypoint contract)
+# ---------------------------------------------------------------------------
+
+
+def test_batch_ingestion_empty_ticker_list_writes_report_only(tmp_path):
+    """When instruments CSV has no valid tickers, report has header only and JSONL is empty."""
+    instruments_csv = tmp_path / "instruments.csv"
+    _write_instruments_csv(
+        [
+            {"Instrumento financeiro": "", "Ativo": "", "Descricao do ativo": ""},
+            {"Instrumento financeiro": "   ", "Ativo": "", "Descricao do ativo": ""},
+        ],
+        instruments_csv,
+    )
+    mock_client = MagicMock(spec=B3QuoteClient)
+    report = run_batch_quote_ingestion(
+        instruments_csv=instruments_csv,
+        reference_date=date(2026, 2, 26),
+        output_dir=tmp_path / "out",
+        client=mock_client,
+    )
+    rows = _read_report(report)
+    assert len(rows) == 0
+    mock_client.get_daily_fluctuation_history.assert_not_called()
+    records = _read_jsonl(tmp_path / "out")
+    assert len(records) == 0
+
+
+# ---------------------------------------------------------------------------
 # Empty lstQtn
 # ---------------------------------------------------------------------------
 
