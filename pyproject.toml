@@ -25,6 +25,7 @@ dependencies = [
 # Development and test dependencies used in CI and by developers
 dev = [
     "pytest>=9.0.2",
+    "pytest-cov>=6.0.0",
     "pytest-playwright>=0.5.0",
 ]
 
@@ -39,6 +40,28 @@ markers = [
     "e2e: end-to-end tests that require a browser (deselect with -m 'not e2e')",
     "live: tests that make real network requests to external sites",
 ]
+
+[tool.coverage.run]
+# Entrypoint-focused: app, docker/scheduler, scripts
+source = ["app", "docker", "scripts"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "app/etl/orchestration/flow.py",
+    "app/scraping/site2/*",
+]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    'if __name__ == "__main__":',
+]
+show_missing = true
+# Optional: fail_under = 60  # enable in CI when targeting a minimum
 
 [tool.playwright]
 # Default browser for pytest-playwright
