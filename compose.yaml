@@ -132,7 +132,7 @@ services:
     profiles: [api]
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.api
     container_name: etlb3_api
     depends_on:
       db:

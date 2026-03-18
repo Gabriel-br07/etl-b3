@@ -1,0 +1,15 @@
+# =============================================================================
+# compose.override.yaml — local development overrides
+# =============================================================================
+# Merged automatically with compose.yaml when you run:
+#   docker compose up   or   docker compose -f compose.yaml up
+#
+# Only overrides the api service: hot reload + bind mount of app code.
+# Remove or rename this file if you want production-like runs without overrides.
+# =============================================================================
+
+services:
+  api:
+    command: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./app:/app/app
