@@ -37,6 +37,7 @@ def _parse_datetime(value: str | None) -> datetime | None:
     ),
     responses={
         200: {"description": "List of intraday quote points (may be empty)."},
+        400: {"description": "Invalid parameters (e.g. invalid ISO 8601 or end before start)."},
     },
 )
 def get_fact_quote_series(
@@ -58,6 +59,11 @@ def get_fact_quote_series(
         raise HTTPException(status_code=400, detail="Invalid start datetime; use ISO 8601 format.")
     if end is not None and end_dt is None:
         raise HTTPException(status_code=400, detail="Invalid end datetime; use ISO 8601 format.")
+    if start_dt is not None and end_dt is not None and end_dt < start_dt:
+        raise HTTPException(
+            status_code=400,
+            detail="end must be greater than or equal to start.",
+        )
     repo = FactQuoteRepository(db)
     items = repo.get_series(
         ticker=ticker.upper(),
