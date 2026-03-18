@@ -125,14 +125,54 @@ The API exposes B3 market data stored in the database plus optional live delayed
 | POST | `/etl/run-latest` | Trigger ETL for latest date (local CSV). |
 | POST | `/etl/backfill` | Trigger historical ETL backfill (body: `date_from`, `date_to`). |
 
-### Resources
+### Endpoint reference — data provided
 
-- **Assets** — B3 listed instruments (`dim_assets`). List with optional search; get by ticker.
-- **Quotes** — Daily quotes from DB (`fact_daily_quotes`) and live delayed snapshots/series from the B3 public API.
-- **Trades** — Daily consolidated trades (`fact_daily_trades`). List with filters; history by ticker; detail by ticker + date.
-- **Fact quotes** — Intraday time-series from DB (`fact_quotes` hypertable). Series by datetime range or by trade date.
-- **Health** — Liveness/readiness; version and environment.
-- **ETL** — Trigger pipeline run or backfill (local mode only via API).
+This section describes **what type of data** each endpoint returns so you can choose the right one for your use case. **DB** = data persisted in the application database (from the ETL pipeline). **Live B3** = data fetched on demand from B3’s public API (delayed, not real-time).
+
+#### Health
+
+| Endpoint | Data source | Response shape |
+|----------|-------------|----------------|
+| `GET /health` | Application | `status` (e.g. `"ok"`), `version`, `environment`. Use for liveness/readiness probes. |
+
+#### Assets (B3 listed instruments)
+
+| Endpoint | Data source | Response shape |
+|----------|-------------|----------------|
+| `GET /assets` | DB (`dim_assets`) | Paginated list. Each item: `ticker`, `asset_name`, `isin`, `segment`, `source_file_date`, `id`, `created_at`, `updated_at`. Optional search by ticker or name (`q`). |
+| `GET /assets/{ticker}` | DB | Single asset: same fields as above. 404 if ticker not found. |
+
+#### Quotes (daily and live)
+
+| Endpoint | Data source | Response shape |
+|----------|-------------|----------------|
+| `GET /quotes/latest` | DB (`fact_daily_quotes`) | Paginated list of **latest daily quote per ticker** (one row per ticker, most recent `trade_date`). Each item: `ticker`, `trade_date`, `last_price`, `min_price`, `max_price`, `avg_price`, `variation_pct`, `financial_volume`, `trade_count`, `source_file_name`, `id`, `ingested_at`. Optional filter by comma-separated `tickers`. |
+| `GET /quotes/{ticker}/history` | DB | List of **historical daily quotes** for one ticker. Same fields per item. Optional `start_date`, `end_date`, `limit`. Ordered by `trade_date` descending. |
+| `GET /quotes/{ticker}` | Live B3 (delayed) | **Latest intraday snapshot** for the ticker: `ticker`, `trade_date`, `message_datetime`, last quote fields (e.g. `close_price`, `price_fluctuation_pct`), `delayed`, `fetched_at`. Cached in-memory (configurable TTL). |
+| `GET /quotes/{ticker}/intraday` | Live B3 (delayed) | **Full minute-level intraday series**: `ticker`, `trade_date`, `message_datetime`, `points` (array of `time`, `close_price`, etc.), `delayed`, `fetched_at`. |
+| `GET /quotes/{ticker}/snapshot` | Live B3 (delayed) | Legacy **delayed quote snapshot**: same idea as `/quotes/{ticker}` with a slightly different field layout. |
+
+#### Trades (daily consolidated — Negocios Consolidados)
+
+| Endpoint | Data source | Response shape |
+|----------|-------------|----------------|
+| `GET /trades` | DB (`fact_daily_trades`) | Paginated list of **daily consolidated trades**. Each item: `id`, `ticker`, `trade_date`, `open_price`, `close_price`, `min_price`, `max_price`, `avg_price`, `variation_pct`, `financial_volume`, `trade_count`, `source_file_name`, `ingested_at`. Filter by `trade_date`, `ticker`, `start_date`/`end_date`. |
+| `GET /trades/{ticker}/history` | DB | List of **daily trades for one ticker**. Same fields. Optional `start_date`, `end_date`, `limit`. |
+| `GET /trades/{ticker}` | DB | **Single daily trade** for ticker + `trade_date` (query param required). Same fields. 404 if not found. |
+
+#### Fact quotes (intraday time-series from DB)
+
+| Endpoint | Data source | Response shape |
+|----------|-------------|----------------|
+| `GET /fact-quotes/{ticker}/series` | DB (`fact_quotes` hypertable) | List of **intraday quote points** in a datetime range. Each item: `ticker`, `quoted_at`, `trade_date`, `close_price`, `price_fluctuation_pct`. Query params: `start`, `end` (ISO 8601), `limit`. Use for persisted intraday data; for live data use `/quotes/{ticker}/intraday`. |
+| `GET /fact-quotes/{ticker}/days/{trade_date}` | DB | All **intraday points for one trade date**. Same fields per item. Returns empty list if no data for that day. |
+
+#### ETL (pipeline triggers)
+
+| Endpoint | Data source | Response shape |
+|----------|-------------|----------------|
+| `POST /etl/run-latest` | Local CSV (B3_DATA_DIR) | Runs ETL for the latest available date. Returns `status`, `result` (pipeline summary: target date, assets/trades upserted, status). Only supports local source; 501 if `source_mode=remote`. |
+| `POST /etl/backfill` | Local CSV | Runs ETL for a date range (body: `date_from`, `date_to`, optional `source_mode`). Returns `total_dates`, `results` (array of per-date summaries). Only supports local source. |
 
 ### Example requests
 
@@ -181,8 +221,10 @@ GET /fact-quotes/PETR4/days/2024-06-14
 ├── scripts/             # CLI scripts: run_etl.py, run_b3_scraper.py, run_b3_quote_batch.py
 ├── tests/               # pytest tests (240 unit tests, no real DB required)
 ├── .env.example         # environment variable reference — copy to .env for local dev
-├── compose.yaml         # Docker Compose: db (TimescaleDB) + scheduler [+ api profile]
-├── Dockerfile           # unified scraper/scheduler/api image
+├── compose.yaml         # Docker Compose base: db, scheduler, api (profile)
+├── compose.override.yaml # Dev overrides: api hot reload + app bind mount (merged automatically)
+├── Dockerfile           # unified scraper/scheduler image
+├── Dockerfile.api       # slim API-only image (no Playwright)
 └── pyproject.toml
 ```
 
@@ -322,6 +364,13 @@ python scripts/run_b3_quote_batch.py
 
 ## Running with Docker (full pipeline)
 
+Compose uses two files:
+
+- **compose.yaml** — base definition for `db`, `scheduler`, and `api` (API is under profile `api`). Single source of truth.
+- **compose.override.yaml** — development overrides only. When present, it is merged automatically with `compose.yaml`. It overrides the `api` service to add hot reload and a bind mount of `./app` so code changes apply without rebuilding. To run without these overrides (e.g. production-like), use `docker compose -f compose.yaml up` and ensure `compose.override.yaml` is not in the project directory, or use a different override file.
+
+When you run `docker compose up` or `docker compose -f compose.yaml up`, Compose loads both files. The API service is built from `Dockerfile.api` (slim image, no Playwright).
+
 ```powershell
 # Build and start db + scheduler
 docker compose build
@@ -343,10 +392,44 @@ On first start the scheduler will:
 ### Start the optional API service
 
 ```powershell
-# Starts db + scheduler + FastAPI (http://localhost:8000)
+# Build API image (slim, from Dockerfile.api) and start db + scheduler + API
+docker compose build api
 docker compose --profile api up -d
+
+# API: http://localhost:8000 — docs: http://localhost:8000/scalar
 docker compose logs -f api
 ```
+
+With `compose.override.yaml` present, the API runs with `--reload` and `./app` mounted, so code changes take effect without restarting the container.
+
+### Rebuild, stop, logs, shell
+
+```powershell
+# Rebuild API after dependency or Dockerfile.api changes
+docker compose build api
+docker compose --profile api up -d
+
+# Stop all services
+docker compose down
+
+# Logs
+docker compose logs -f api
+docker compose logs -f scheduler
+docker compose logs -f db
+
+# Shell inside the API container
+docker compose exec api /bin/bash
+```
+
+### Run the API without Docker
+
+Same as today: from the project root, with a venv and `.env` configured:
+
+```powershell
+uv run uvicorn app.main:app --reload
+```
+
+API base: `http://localhost:8000`, docs: `http://localhost:8000/scalar`.
 
 ### Manual operations inside the running container
 
