@@ -367,9 +367,9 @@ python scripts/run_b3_quote_batch.py
 Compose uses two files:
 
 - **compose.yaml** — base definition for `db`, `scheduler`, and `api` (API is under profile `api`). Single source of truth.
-- **compose.override.yaml** — development overrides only. When present, it is merged automatically with `compose.yaml`. It overrides the `api` service to add hot reload and a bind mount of `./app` so code changes apply without rebuilding. To run without these overrides (e.g. production-like), use `docker compose -f compose.yaml up` and ensure `compose.override.yaml` is not in the project directory, or use a different override file.
+- **compose.override.yaml** — development overrides only (hot reload and bind mount of `./app` for the `api` service). It is merged automatically only when you run `docker compose up` with no `-f` flag: Compose then loads `compose.yaml` and merges `compose.override.yaml` if present. If you run `docker compose -f compose.yaml up`, only the base file is loaded; to include the override, use `docker compose -f compose.yaml -f compose.override.yaml up`. To run without overrides (e.g. production-like), use `docker compose -f compose.yaml up` so that only the base file is used.
 
-When you run `docker compose up` or `docker compose -f compose.yaml up`, Compose loads both files. The API service is built from `Dockerfile.api` (slim image, no Playwright).
+The API service is built from `Dockerfile.api` (slim image, no Playwright).
 
 ```powershell
 # Build and start db + scheduler
