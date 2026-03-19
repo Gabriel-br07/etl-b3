@@ -5,7 +5,7 @@
 Install dev dependencies and enable Git hooks once per clone:
 
 ```powershell
-uv sync --extra dev
+uv sync --locked --extra dev
 uv run pre-commit install
 ```
 

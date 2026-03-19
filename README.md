@@ -490,7 +490,7 @@ Lint and static typing run on **every commit** if you install [pre-commit](https
 **One-time setup:**
 
 ```powershell
-uv sync --extra dev
+uv sync --locked --extra dev
 uv run pre-commit install
 ```
 

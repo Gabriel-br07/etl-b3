@@ -1,4 +1,4 @@
-# Install: uv sync --extra dev && uv run pre-commit install
+# Install: uv sync --locked --extra dev && uv run pre-commit install
 # Run manually: uv run pre-commit run --all-files
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
