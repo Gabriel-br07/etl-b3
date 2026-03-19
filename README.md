@@ -219,7 +219,11 @@ GET /fact-quotes/PETR4/days/2024-06-14
 │   └── initdb/
 │       └── 01_timescaledb.sql  # CREATE EXTENSION timescaledb (auto-run by Postgres)
 ├── scripts/             # CLI scripts: run_etl.py, run_b3_scraper.py, run_b3_quote_batch.py
-├── tests/               # pytest tests (entrypoint-focused; ~138 tests, no real DB)
+├── tests/               # pytest: unit/, integration/, e2e/, fixtures/, conftest.py
+├── .github/workflows/   # GitHub Actions: ci.yml (ruff, ty, pytest)
+├── .pre-commit-config.yaml  # ruff + ty on git commit (after pre-commit install)
+├── CONTRIBUTING.md      # hooks, manual lint/typecheck, CI overview
+├── TESTING-STRATEGY.md  # short pyramid summary; details in README
 ├── .env.example         # environment variable reference — copy to .env for local dev
 ├── compose.yaml         # Docker Compose base: db, scheduler, api (profile)
 ├── compose.override.yaml # Dev overrides: api hot reload + app bind mount (merged automatically)
@@ -479,29 +483,85 @@ docker compose up -d
 
 ---
 
-## Running tests
+## Code quality
 
-Tests are **entrypoint-focused**: they exercise the scheduler, CLI scripts, API routes, and batch quote ingestion with full mocking (no real DB, browser, or external HTTP). Run everything except e2e/live:
+Lint and static typing run on **every commit** if you install [pre-commit](https://pre-commit.com/) hooks ([Ruff](https://docs.astral.sh/ruff/), [ty](https://docs.astral.sh/ty/)). See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
+
+**One-time setup:**
 
 ```powershell
-# All unit tests (no DB or browser required — ~138 tests)
-uv run pytest tests/ -m "not e2e and not live" --tb=short
+uv sync --extra dev
+uv run pre-commit install
+```
 
-# With coverage (pytest-cov; config in pyproject.toml)
-uv run pytest tests/ -m "not e2e and not live" --cov --cov-report=term-missing
+**Manual checks (same as hooks / CI):**
+
+```powershell
+uv run ruff check .
+uv run ty check
+```
+
+Configuration lives in `pyproject.toml` (`[tool.ruff]`, `[tool.ty]`). By default **ty** type-checks `app`, `scripts`, and `docker` only (not `tests/`), to keep the gate stable alongside dynamic test patterns.
+
+---
+
+## Running tests
+
+Layout follows a **testing pyramid** (see [TESTING-STRATEGY.md](TESTING-STRATEGY.md)): fast **unit** tests, **integration** tests (TestClient, `respx`, entrypoints), and optional **E2E** black-box HTTP when `E2E_BASE_URL` is set.
+
+**Default CI / local suite** — no real browser, no live HTTP, no optional DB smoke tests:
+
+```powershell
+uv run pytest tests/ -m "not e2e and not live and not db" --tb=short
+```
+
+**Fast unit-only loop:**
+
+```powershell
+uv run pytest tests/unit -q
+```
+
+**With coverage** (`pytest-cov`; config in `pyproject.toml`):
+
+```powershell
+uv run pytest tests/ -m "not e2e and not live and not db" --cov --cov-report=term-missing
+```
+
+**Optional PostgreSQL smoke** (`@pytest.mark.db`) — requires a reachable `DATABASE_URL` (e.g. `docker compose up -d db` + `alembic upgrade head`):
+
+```powershell
+uv run pytest tests/ -m db -v
+```
+
+**Optional E2E** — start the API, then set `E2E_BASE_URL` (e.g. `http://127.0.0.1:8000`):
+
+```powershell
+$env:E2E_BASE_URL = "http://127.0.0.1:8000"
+uv run pytest tests/e2e -m e2e -v
 ```
 
 ### Test layout
 
-| Module | Focus |
-|--------|--------|
-| `test_api.py` | FastAPI TestClient: health, docs, OpenAPI, route smoke tests; ETL routes (`/etl/run-latest`, `/etl/backfill`) with mocked pipeline; `/quotes/latest` ticker parsing. |
-| `test_scheduler.py` | `docker/scheduler.py`: `next_daily_run`, `run_with_retry`, migrations, `wait_for_db`, daily scrapers, load instruments/trades, load latest JSONL, quote batch with retry; `main()` exit-on-failure and startup sequence. All with mocked DB/subprocess/sleep. |
-| `test_cli_entrypoints.py` | CLI scripts: `run_b3_quote_batch`, `run_etl`, `run_b3_scraper`, `run_b3_scraper_negocios` — `main()` invokes expected pipelines/scrapers (mocked). |
-| `test_run_daily_batch.py` | Contract for `docker/run_daily_batch.sh`: script exists, syntax (`bash -n`), invokes expected scraper paths, headless/date/retry. |
-| `test_b3_quote_integration.py` | B3 quote client, parsers, cache, use cases, routes (snapshot/latest/intraday); `read_tickers`; batch quote ingestion (JSONL + report, empty ticker list, empty `lstQtn`). |
+| Path | Focus |
+|------|--------|
+| `tests/unit/` | Pure logic: column mapping, CSV resolver, ticker filter, asset sanitization / upsert SQL shape (mocked session). |
+| `tests/integration/test_api.py` | FastAPI `TestClient`: health, Scalar/OpenAPI, route smoke; ETL routes with mocked pipeline; `/quotes/latest` ticker parsing. |
+| `tests/integration/test_b3_quotes.py` | B3 client (`respx`), parsers, cache, use cases, quote routes, `read_tickers`, batch ingestion (JSONL + report). |
+| `tests/integration/test_scheduler.py` | `docker/scheduler.py` orchestration (mocked subprocess/sleep/DB). |
+| `tests/integration/test_cli_entrypoints.py` | CLI `main()` dispatch (mocked pipelines/scrapers). |
+| `tests/integration/test_run_daily_batch.py` | `docker/run_daily_batch.sh` contract (bash `-n`, expected invocations). |
+| `tests/integration/test_db_smoke.py` | `SELECT 1` against real Postgres when available (skipped if DB down). |
+| `tests/e2e/test_api_blackbox.py` | `httpx` against running API (`E2E_BASE_URL`). |
+| `tests/conftest.py` | Shared `client` fixture (`TestClient`). |
+| `tests/fixtures/` | Static CSV samples and Polars builders. |
 
-There is no shared `conftest.py`; API tests use an in-module `client` fixture. Coverage is configured in `pyproject.toml` (`[tool.coverage.run]` / `[tool.coverage.report]`) for `app`, `docker`, and `scripts`.
+Coverage sources: `app`, `docker`, `scripts` (see `[tool.coverage.run]` in `pyproject.toml`).
+
+### CI and repo layout notes
+
+- **GitHub Actions:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on push and pull requests targeting `main` or `master` (Ruff, ty, pytest with the same marker filter as above). If you remove or rename this workflow, update this README and [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Tests** were reorganized from a flat `tests/test_*.py` layout into `tests/unit/`, `tests/integration/`, and `tests/e2e/` (shared `tests/conftest.py`). Older module names such as `test_b3_quote_integration.py` live on as `tests/integration/test_b3_quotes.py`.
+- **Legacy DB-heavy integration tests** that lived at paths like `tests/test_load_integration.py` / `tests/test_pipeline.py` are not in the current tree; coverage for loaders/pipelines is intentionally slimmer and documented in the table above.
 
 ---
 
