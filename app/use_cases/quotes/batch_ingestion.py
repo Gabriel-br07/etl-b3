@@ -57,8 +57,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from app.etl.ingestion.ticker_filter import TickerFilterResult, build_ticker_filter
 from app.etl.ingestion.ticker_reader import read_tickers_from_csv
 from app.integrations.b3.client import B3QuoteClient
@@ -284,16 +282,19 @@ def run_batch_quote_ingestion(
         report_path,
     )
 
-    own_client = client is None
-    if own_client:
-        client = B3QuoteClient()
+    if client is None:
+        http_client = B3QuoteClient()
+        own_client = True
+    else:
+        http_client = client
+        own_client = False
 
     report_rows: list[dict[str, str]] = []
     successes = 0
     failures = 0
 
     try:
-        client.warm_session()
+        http_client.warm_session()
 
         with open(jsonl_path, "w", encoding="utf-8") as jfh:
             for i, ticker in enumerate(tickers, start=1):
@@ -308,11 +309,11 @@ def run_batch_quote_ingestion(
                     # Use the public client API and capture status code without
                     # monkey-patching private methods.
                     try:
-                        raw_payload = client.get_daily_fluctuation_history(ticker)
+                        raw_payload = http_client.get_daily_fluctuation_history(ticker)
                         # If no exception is raised, we assume a successful 2xx response.
                         # Prefer an upstream status code exposed by the client, if any,
                         # otherwise fall back to 200 to preserve existing behavior.
-                        status = getattr(client, "last_status_code", None)
+                        status = getattr(http_client, "last_status_code", None)
                         http_status = status if status is not None else 200
                     except B3ClientError as exc:
                         # Record the HTTP status code from the exception (if available)
@@ -362,7 +363,7 @@ def run_batch_quote_ingestion(
 
     finally:
         if own_client:
-            client.close()
+            http_client.close()
 
     # Write the report CSV after all tickers are processed
     with open(report_path, "w", encoding="utf-8", newline="") as rfh:

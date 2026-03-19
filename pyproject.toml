@@ -27,6 +27,9 @@ dev = [
     "pytest>=9.0.2",
     "pytest-cov>=6.0.0",
     "pytest-playwright>=0.5.0",
+    "pre-commit>=4.5.1",
+    "ruff>=0.15.7",
+    "ty>=0.0.24",
 ]
 
 [tool.setuptools]
@@ -37,8 +40,10 @@ packages = ["app"]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 markers = [
-    "e2e: end-to-end tests that require a browser (deselect with -m 'not e2e')",
+    "e2e: black-box tests against a running stack (E2E_BASE_URL) or browser (deselect with -m 'not e2e')",
     "live: tests that make real network requests to external sites",
+    "integration: multi-component tests (optional marker for filtering)",
+    "db: requires a reachable PostgreSQL (DATABASE_URL); skipped on connection failure",
 ]
 
 [tool.coverage.run]
@@ -66,3 +71,23 @@ show_missing = true
 [tool.playwright]
 # Default browser for pytest-playwright
 browser = "chromium"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = [
+    ".venv",
+    "venv",
+    "__pycache__",
+    "alembic/versions",
+]
+
+[tool.ruff.lint]
+
+[tool.ty.environment]
+python-version = "3.13"
+# Let ty infer project layout; explicit root = ["app"] breaks `from app.*` resolution
+
+[tool.ty.src]
+# Type-check application and scripts; tests rely on dynamic imports — exclude for a stable gate
+include = ["app", "scripts", "docker"]
