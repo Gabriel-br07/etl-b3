@@ -14,7 +14,7 @@ Steps:
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 import polars as pl
@@ -129,7 +129,6 @@ def run_daily_b3_etl(
     if target_date is None:
         target_date = date.today()
 
-    started_at = datetime.now(tz=timezone.utc)
     db = SessionLocal()
     etl_repo = ETLRunRepository(db)
     run = etl_repo.start_run("run_daily_b3_etl", source_date=target_date)

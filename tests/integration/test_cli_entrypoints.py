@@ -1,0 +1,219 @@
+"""Entrypoint tests for CLI scripts.
+
+Tests main() / CLI dispatch for run_b3_quote_batch, run_etl, and scraper scripts.
+Scrapers are tested by mocking the scraper class (no real Playwright).
+"""
+
+from __future__ import annotations
+
+import sys
+from datetime import date
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+# ---------------------------------------------------------------------------
+# run_b3_quote_batch.main()
+# ---------------------------------------------------------------------------
+
+
+def _load_quote_batch_module():
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "run_b3_quote_batch",
+        ROOT / "scripts" / "run_b3_quote_batch.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["run_b3_quote_batch"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_run_b3_quote_batch_main_explicit_instruments_calls_ingestion(tmp_path):
+    instruments_csv = tmp_path / "instruments.csv"
+    instruments_csv.write_text("Instrumento financeiro;Ativo\nPETR4;PETR", encoding="utf-8")
+    report_path = tmp_path / "report.csv"
+    mod = _load_quote_batch_module()
+    mock_ingest = MagicMock(return_value=report_path)
+    with patch.object(mod, "run_batch_quote_ingestion", mock_ingest):
+        with patch("sys.argv", ["run_b3_quote_batch.py", "--instruments", str(instruments_csv)]):
+            with patch("sys.exit") as mock_exit:
+                mod.main()
+    mock_ingest.assert_called_once()
+    call_kw = mock_ingest.call_args[1]
+    assert call_kw["instruments_csv"] == instruments_csv
+    assert call_kw["filter_mode"] == "strict"
+    assert call_kw["trades_csv"] is None or call_kw["trades_csv"] == Path(call_kw["trades_csv"])
+    mock_exit.assert_not_called()
+
+
+def test_run_b3_quote_batch_main_filter_mode_fallback(tmp_path):
+    instruments_csv = tmp_path / "instruments.csv"
+    instruments_csv.write_text("Instrumento financeiro;Ativo\nPETR4;PETR", encoding="utf-8")
+    mod = _load_quote_batch_module()
+    mock_ingest = MagicMock(return_value=tmp_path / "report.csv")
+    with patch.object(mod, "run_batch_quote_ingestion", mock_ingest):
+        with patch(
+            "sys.argv",
+            ["run_b3_quote_batch.py", "--instruments", str(instruments_csv), "--filter-mode", "fallback"],
+        ), patch("sys.exit"):
+            mod.main()
+    call_kw = mock_ingest.call_args[1]
+    assert call_kw["filter_mode"] == "fallback"
+
+
+def test_run_b3_quote_batch_main_exits_when_instruments_not_found(tmp_path):
+    # Use a path that does not exist (avoid Windows path quirks with /nonexistent)
+    missing = tmp_path / "does_not_exist.csv"
+    assert not missing.exists()
+    mod = _load_quote_batch_module()
+    with patch("sys.argv", ["run_b3_quote_batch.py", "--instruments", str(missing)]):
+        with patch("sys.exit") as mock_exit:
+            mock_exit.side_effect = SystemExit
+            with pytest.raises(SystemExit):
+                mod.main()
+    mock_exit.assert_called_once_with(1)
+
+
+# ---------------------------------------------------------------------------
+# run_etl.main()
+# ---------------------------------------------------------------------------
+
+
+def _load_run_etl_module():
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "run_etl",
+        ROOT / "scripts" / "run_etl.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["run_etl"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_run_etl_main_calls_run_instruments_and_trades_pipeline(tmp_path):
+    instruments_csv = tmp_path / "instruments.csv"
+    trades_csv = tmp_path / "trades.csv"
+    instruments_csv.write_text("x", encoding="utf-8")
+    trades_csv.write_text("y", encoding="utf-8")
+    success_result = {"status": MagicMock(value="success"), "assets_upserted": 1}
+    with patch("app.etl.orchestration.pipeline.run_instruments_and_trades_pipeline") as mock_pipeline, patch(
+        "app.etl.orchestration.pipeline.run_daily_quotes_pipeline", return_value=success_result
+    ), patch("app.etl.orchestration.pipeline.run_intraday_quotes_pipeline", return_value=success_result):
+        mock_pipeline.return_value = success_result
+        with patch("app.core.config.settings") as mock_settings:
+            mock_settings.b3_data_dir = str(tmp_path)
+            with patch(
+                "sys.argv",
+                [
+                    "run_etl.py",
+                    "--instruments", str(instruments_csv),
+                    "--trades", str(trades_csv),
+                    "--date", "2026-03-18",
+                ],
+            ), patch("sys.exit") as mock_exit:
+                mod = _load_run_etl_module()
+                mod.main()
+    mock_pipeline.assert_called()
+    mock_exit.assert_called_once_with(0)
+
+
+def test_run_etl_main_run_daily_quotes_only_calls_daily_quotes_pipeline(tmp_path):
+    daily_csv = tmp_path / "negocios.csv"
+    daily_csv.write_text("ticker;close\nPETR4;10", encoding="utf-8")
+    with patch("app.etl.orchestration.pipeline.run_daily_quotes_pipeline") as mock_dq:
+        mock_dq.return_value = {"status": MagicMock(value="success"), "quotes_upserted": 5}
+        with patch("app.core.config.settings") as mock_settings:
+            mock_settings.b3_data_dir = str(tmp_path)
+            with patch(
+                "sys.argv",
+                ["run_etl.py", "--run-daily-quotes", "--daily-quotes", str(daily_csv), "--date", "2026-03-18"],
+            ), patch("sys.exit"):
+                mod = _load_run_etl_module()
+                mod.main()
+    mock_dq.assert_called_once()
+    assert mock_dq.call_args[0][1] == date(2026, 3, 18)
+
+
+def test_run_etl_main_run_quotes_only_calls_intraday_quotes_pipeline(tmp_path):
+    jsonl = tmp_path / "daily_fluctuation_20260318.jsonl"
+    jsonl.write_text("{}", encoding="utf-8")
+    with patch("app.etl.orchestration.pipeline.run_intraday_quotes_pipeline") as mock_intraday:
+        mock_intraday.return_value = {"status": MagicMock(value="success"), "rows_inserted": 10}
+        with patch("app.core.config.settings") as mock_settings:
+            mock_settings.b3_data_dir = str(tmp_path)
+            with patch(
+                "sys.argv",
+                ["run_etl.py", "--run-quotes", "--quotes", str(jsonl)],
+            ), patch("sys.exit"):
+                mod = _load_run_etl_module()
+                mod.main()
+    mock_intraday.assert_called_once()
+    assert mock_intraday.call_args[0][0] == jsonl
+
+
+# ---------------------------------------------------------------------------
+# run_b3_scraper.py main() — mock BoletimDiarioScraper
+# ---------------------------------------------------------------------------
+
+
+def test_run_b3_scraper_main_invokes_scraper_with_date():
+    with patch("app.scraping.b3.scraper.BoletimDiarioScraper") as mock_scraper_cls:
+        mock_instance = MagicMock()
+        mock_instance.scrape.return_value = []
+        mock_scraper_cls.return_value = mock_instance
+        with patch("sys.argv", ["run_b3_scraper.py", "--headless", "--date", "2024-06-14"]):
+            if str(ROOT) not in sys.path:
+                sys.path.insert(0, str(ROOT))
+            if "run_b3_scraper" in sys.modules:
+                del sys.modules["run_b3_scraper"]
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "run_b3_scraper",
+                ROOT / "scripts" / "run_b3_scraper.py",
+            )
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["run_b3_scraper"] = mod
+            spec.loader.exec_module(mod)
+            mod.main()
+    mock_scraper_cls.assert_called_once()
+    mock_instance.scrape.assert_called_once()
+    assert mock_instance.scrape.call_args[0][0] == date(2024, 6, 14)
+
+
+# ---------------------------------------------------------------------------
+# run_b3_scraper_negocios.py main() — mock NegociosConsolidadosScraper
+# ---------------------------------------------------------------------------
+
+
+def test_run_b3_scraper_negocios_main_invokes_scraper_with_date():
+    with patch("app.scraping.b3.scraper_negocios.NegociosConsolidadosScraper") as mock_scraper_cls:
+        mock_instance = MagicMock()
+        mock_instance.scrape.return_value = []
+        mock_scraper_cls.return_value = mock_instance
+        with patch("sys.argv", ["run_b3_scraper_negocios.py", "--headless", "--date", "2024-06-14"]):
+            if str(ROOT) not in sys.path:
+                sys.path.insert(0, str(ROOT))
+            if "run_b3_scraper_negocios" in sys.modules:
+                del sys.modules["run_b3_scraper_negocios"]
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "run_b3_scraper_negocios",
+                ROOT / "scripts" / "run_b3_scraper_negocios.py",
+            )
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["run_b3_scraper_negocios"] = mod
+            spec.loader.exec_module(mod)
+            mod.main()
+    mock_scraper_cls.assert_called_once()
+    mock_instance.scrape.assert_called_once()
+    assert mock_instance.scrape.call_args[0][0] == date(2024, 6, 14)

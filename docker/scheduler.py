@@ -23,7 +23,14 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Any
+from typing import Any, Callable
+
+from app.core.constants import ETLStatus
+from app.etl.orchestration.csv_resolver import (
+    CSVNotFoundError,
+    ensure_data_dirs as resolver_ensure_data_dirs,
+    resolve_instruments_csv,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -55,18 +62,6 @@ PYTHON:       str = os.environ.get("PYTHON", "python")
 ALEMBIC:      str = os.environ.get("ALEMBIC", "alembic")
 DAILY_BATCH:  str = os.environ.get("DAILY_BATCH", "/app/docker/run_daily_batch.sh")
 QUOTE_SCRIPT: str = os.environ.get("QUOTE_SCRIPT", "/app/scripts/run_b3_quote_batch.py")
-
-
-# ---------------------------------------------------------------------------
-# CSV discovery
-# ---------------------------------------------------------------------------
-
-from app.etl.orchestration.csv_resolver import (
-    resolve_instruments_csv,
-    ensure_data_dirs as resolver_ensure_data_dirs,
-    CSVNotFoundError,
-)
-from app.core.constants import ETLStatus
 
 # ---------------------------------------------------------------------------
 # DB startup helpers

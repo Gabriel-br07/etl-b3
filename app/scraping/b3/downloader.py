@@ -274,7 +274,7 @@ def _choose_header_index(lines: List[str], table_key: Optional[str]) -> Tuple[in
         # No token-detected header found in the scan window — warn and fall back
         logger.warning(
             "%s: token detection failed in first %d lines. First 5 lines: %s",
-            table_key, max_scan, [l[:80] for l in lines[:5]],
+            table_key, max_scan, [line[:80] for line in lines[:5]],
         )
         # Fallback to the first non-empty line for consistent behavior
         for idx in range(len(lines)):
@@ -315,7 +315,7 @@ def _write_normalized_csv(
                 writer.writerow(row)
         # Atomic replace
         tmp_name.replace(dest_path)
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to write normalized CSV to %s", dest_path)
         # Clean up temp file if it was created
         if tmp_name is not None and tmp_name.exists():
@@ -455,7 +455,8 @@ def trigger_csv_export_and_save(
 
     csv_button_locator is typed as Playwright Locator for clarity.
     """
-    _, filename_template = TABLE_CONFIG[table_key]
+    tk: TableKey = table_key if table_key is not None else "cadastro_instrumentos"
+    _, filename_template = TABLE_CONFIG[tk]
     source_url = page.url
 
     logger.info("Triggering CSV download (table=%s) …", table_key)
@@ -470,7 +471,7 @@ def trigger_csv_export_and_save(
         filename_template=filename_template,
         source_url=source_url,
         default_delimiter=default_delimiter,
-        table_key=table_key,
+        table_key=tk,
     )
 
 
@@ -498,7 +499,7 @@ def _normalize_csv_using_stdlib(src_path: Path, dest_path: Path, default_delimit
     # Log the first 5 lines for diagnostics (crucial for Docker vs local debugging)
     logger.info(
         "[normalize] %s first 5 raw lines: %s",
-        src_path.name, [l[:100] for l in lines[:5]],
+        src_path.name, [line[:100] for line in lines[:5]],
     )
 
     # Choose header index with special handling per table type

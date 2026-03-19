@@ -85,4 +85,4 @@ class QuoteRepository:
         )
         result = self.db.execute(stmt)
         # Commit is handled by the caller (managed_session) to provide atomicity
-        return result.rowcount
+        return result.rowcount  # ty: ignore[unresolved-attribute]

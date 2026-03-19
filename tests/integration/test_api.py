@@ -1,15 +1,10 @@
 """API integration tests (no real DB – uses TestClient)."""
 
-import pytest
-from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
 
+from fastapi.testclient import TestClient
+
 from app.main import app
-
-
-@pytest.fixture(scope="module")
-def client():
-    return TestClient(app, raise_server_exceptions=False)
 
 
 def test_health_returns_ok(client):
@@ -70,6 +65,91 @@ def test_openapi_has_expected_endpoints(client):
     assert "/trades" in paths
     assert "/fact-quotes/{ticker}/series" in paths
     assert "/fact-quotes/{ticker}/days/{trade_date}" in paths
+
+
+# ---------------------------------------------------------------------------
+# Representative route smoke tests (one per router)
+# ---------------------------------------------------------------------------
+
+
+def test_trades_endpoint_responds(client):
+    """GET /trades should respond (200/500/503 without real DB)."""
+    response = client.get("/trades")
+    assert response.status_code in (200, 500, 503)
+
+
+def test_fact_quotes_series_endpoint_responds(client):
+    """GET /fact-quotes/{ticker}/series should respond (200/500/503)."""
+    response = client.get("/fact-quotes/PETR4/series")
+    assert response.status_code in (200, 500, 503)
+
+
+# ---------------------------------------------------------------------------
+# ETL-triggering routes (mock pipeline to avoid real DB)
+# ---------------------------------------------------------------------------
+
+
+def test_etl_run_latest_calls_pipeline_and_returns_200(client, tmp_path):
+    """POST /etl/run-latest with source_mode=local should call run_instruments_and_trades_pipeline."""
+    instruments_csv = tmp_path / "cadastro_20260318.normalized.csv"
+    trades_csv = tmp_path / "negocios_consolidados_20260318.normalized.csv"
+    instruments_csv.write_text("Instrumento financeiro;Ativo\nPETR4;PETR", encoding="utf-8")
+    trades_csv.write_text("ticker;trade_date\nPETR4;2026-03-18", encoding="utf-8")
+    with patch("app.api.routes.etl.run_instruments_and_trades_pipeline") as mock_pipeline:
+        mock_pipeline.return_value = {
+            "status": "success",
+            "assets_upserted": 1,
+            "trades_upserted": 1,
+            "target_date": "2026-03-18",
+        }
+        with patch("app.api.routes.etl.settings") as mock_settings:
+            mock_settings.b3_data_dir = str(tmp_path)
+            with patch(
+                "app.api.routes.etl._resolve_local_paths",
+                return_value=(instruments_csv, trades_csv),
+            ):
+                response = client.post(
+                    "/etl/run-latest",
+                    json={"source_mode": "local"},
+                )
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("status") == "ok"
+    assert "result" in data
+    mock_pipeline.assert_called_once()
+    call_args = mock_pipeline.call_args[0]
+    assert call_args[0] == instruments_csv
+    assert call_args[1] == trades_csv
+    assert len(call_args) == 3  # target_date
+
+
+def test_etl_run_latest_remote_returns_501(client):
+    """POST /etl/run-latest with source_mode=remote must return 501."""
+    response = client.post("/etl/run-latest", json={"source_mode": "remote"})
+    assert response.status_code == 501
+    assert "remote" in response.json().get("detail", "").lower()
+
+
+def test_etl_backfill_remote_returns_501(client):
+    """POST /etl/backfill with source_mode=remote must return 501."""
+    response = client.post(
+        "/etl/backfill",
+        json={
+            "source_mode": "remote",
+            "date_from": "2026-03-01",
+            "date_to": "2026-03-18",
+        },
+    )
+    assert response.status_code == 501
+
+
+def test_etl_run_latest_404_when_no_csv(client, tmp_path):
+    """POST /etl/run-latest returns 404 when no instruments CSV found."""
+    from fastapi import HTTPException
+
+    with patch("app.api.routes.etl._resolve_local_paths", side_effect=HTTPException(status_code=404, detail="not found")):
+        response = client.post("/etl/run-latest", json={"source_mode": "local"})
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
