@@ -1,15 +1,10 @@
 """API integration tests (no real DB – uses TestClient)."""
 
-import pytest
-from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
 
+from fastapi.testclient import TestClient
+
 from app.main import app
-
-
-@pytest.fixture(scope="module")
-def client():
-    return TestClient(app, raise_server_exceptions=False)
 
 
 def test_health_returns_ok(client):

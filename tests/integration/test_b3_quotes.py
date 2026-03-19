@@ -1,4 +1,4 @@
-"""Tests for the B3 live quote snapshot integration.
+"""Integration tests for B3 quote client, parsers, services, routes, and batch ingestion.
 
 Coverage:
 - B3QuoteClient: successful fetch, 403→warm+retry, 429→warm+retry,
@@ -59,6 +59,11 @@ from app.integrations.b3.parser import (
     parse_latest_snapshot,
 )
 from app.integrations.b3.service import B3QuoteService
+from app.etl.ingestion.ticker_reader import (
+    TickerColumnMissingError,
+    read_tickers_from_csv,
+)
+from app.use_cases.quotes.batch_ingestion import run_batch_quote_ingestion
 from app.use_cases.quotes.get_daily_fluctuation import get_daily_fluctuation
 from app.use_cases.quotes.get_intraday_series import get_intraday_series as uc_get_intraday_series
 from app.use_cases.quotes.get_latest_snapshot import get_latest_snapshot as uc_get_latest_snapshot
@@ -106,8 +111,8 @@ WARM_URL = (
 
 
 @pytest.fixture()
-def client() -> Generator[B3QuoteClient, None, None]:
-    """Return a B3QuoteClient with the default base / warm URLs."""
+def b3_quote_client() -> Generator[B3QuoteClient, None, None]:
+    """B3 HTTP client for respx-based tests (distinct from FastAPI TestClient in conftest)."""
     c = B3QuoteClient(
         base_url=BASE_URL,
         warm_url=WARM_URL,
@@ -229,19 +234,19 @@ def test_parse_uses_today_when_trade_date_missing(monkeypatch):
 
 
 @respx.mock
-def test_client_get_daily_fluctuation_success(client):
+def test_client_get_daily_fluctuation_success(b3_quote_client):
     respx.get(FLUCTUATION_URL).mock(
         return_value=httpx.Response(200, json=SAMPLE_RAW_PAYLOAD)
     )
-    data = client.get_daily_fluctuation_history(TICKER)
+    data = b3_quote_client.get_daily_fluctuation_history(TICKER)
     assert data == SAMPLE_RAW_PAYLOAD
 
 
 @respx.mock
-def test_client_uppercases_ticker(client):
+def test_client_uppercases_ticker(b3_quote_client):
     url = f"{BASE_URL}/DailyFluctuationHistory/PETR4"
     respx.get(url).mock(return_value=httpx.Response(200, json=SAMPLE_RAW_PAYLOAD))
-    data = client.get_daily_fluctuation_history("petr4")
+    data = b3_quote_client.get_daily_fluctuation_history("petr4")
     assert data == SAMPLE_RAW_PAYLOAD
 
 
@@ -251,7 +256,7 @@ def test_client_uppercases_ticker(client):
 
 
 @respx.mock
-def test_client_403_warms_and_retries_success(client):
+def test_client_403_warms_and_retries_success(b3_quote_client):
     # First call returns 403; after warm-up second call returns 200.
     respx.get(WARM_URL).mock(return_value=httpx.Response(200, text="ok"))
     fluctuation_route = respx.get(FLUCTUATION_URL)
@@ -259,7 +264,7 @@ def test_client_403_warms_and_retries_success(client):
         httpx.Response(403, text="Forbidden"),
         httpx.Response(200, json=SAMPLE_RAW_PAYLOAD),
     ]
-    data = client.get_daily_fluctuation_history(TICKER)
+    data = b3_quote_client.get_daily_fluctuation_history(TICKER)
     assert data == SAMPLE_RAW_PAYLOAD
     assert fluctuation_route.call_count == 2
 
@@ -270,14 +275,14 @@ def test_client_403_warms_and_retries_success(client):
 
 
 @respx.mock
-def test_client_429_warms_and_retries_success(client):
+def test_client_429_warms_and_retries_success(b3_quote_client):
     respx.get(WARM_URL).mock(return_value=httpx.Response(200, text="ok"))
     fluctuation_route = respx.get(FLUCTUATION_URL)
     fluctuation_route.side_effect = [
         httpx.Response(429, text="Too Many Requests"),
         httpx.Response(200, json=SAMPLE_RAW_PAYLOAD),
     ]
-    data = client.get_daily_fluctuation_history(TICKER)
+    data = b3_quote_client.get_daily_fluctuation_history(TICKER)
     assert data == SAMPLE_RAW_PAYLOAD
 
 
@@ -287,21 +292,21 @@ def test_client_429_warms_and_retries_success(client):
 
 
 @respx.mock
-def test_client_persistent_403_raises_temporary_block(client):
+def test_client_persistent_403_raises_temporary_block(b3_quote_client):
     respx.get(WARM_URL).mock(return_value=httpx.Response(200, text="ok"))
     respx.get(FLUCTUATION_URL).mock(return_value=httpx.Response(403, text="Forbidden"))
     with pytest.raises(B3TemporaryBlockError) as exc_info:
-        client.get_daily_fluctuation_history(TICKER)
+        b3_quote_client.get_daily_fluctuation_history(TICKER)
     assert exc_info.value.ticker == TICKER
     assert exc_info.value.status_code == 403
 
 
 @respx.mock
-def test_client_persistent_429_raises_temporary_block(client):
+def test_client_persistent_429_raises_temporary_block(b3_quote_client):
     respx.get(WARM_URL).mock(return_value=httpx.Response(200, text="ok"))
     respx.get(FLUCTUATION_URL).mock(return_value=httpx.Response(429, text="Too Many"))
     with pytest.raises(B3TemporaryBlockError) as exc_info:
-        client.get_daily_fluctuation_history(TICKER)
+        b3_quote_client.get_daily_fluctuation_history(TICKER)
     assert exc_info.value.status_code == 429
 
 
@@ -311,10 +316,10 @@ def test_client_persistent_429_raises_temporary_block(client):
 
 
 @respx.mock
-def test_client_404_raises_ticker_not_found(client):
+def test_client_404_raises_ticker_not_found(b3_quote_client):
     respx.get(FLUCTUATION_URL).mock(return_value=httpx.Response(404, text="Not Found"))
     with pytest.raises(B3TickerNotFoundError) as exc_info:
-        client.get_daily_fluctuation_history(TICKER)
+        b3_quote_client.get_daily_fluctuation_history(TICKER)
     assert exc_info.value.ticker == TICKER
 
 
@@ -324,10 +329,10 @@ def test_client_404_raises_ticker_not_found(client):
 
 
 @respx.mock
-def test_client_500_raises_unexpected_response(client):
+def test_client_500_raises_unexpected_response(b3_quote_client):
     respx.get(FLUCTUATION_URL).mock(return_value=httpx.Response(500, text="Server Error"))
     with pytest.raises(B3UnexpectedResponseError) as exc_info:
-        client.get_daily_fluctuation_history(TICKER)
+        b3_quote_client.get_daily_fluctuation_history(TICKER)
     assert exc_info.value.status_code == 500
 
 
@@ -337,12 +342,12 @@ def test_client_500_raises_unexpected_response(client):
 
 
 @respx.mock
-def test_client_non_json_body_raises_unexpected_response(client):
+def test_client_non_json_body_raises_unexpected_response(b3_quote_client):
     respx.get(FLUCTUATION_URL).mock(
         return_value=httpx.Response(200, text="<html>CF Challenge</html>")
     )
     with pytest.raises(B3UnexpectedResponseError, match="not valid JSON"):
-        client.get_daily_fluctuation_history(TICKER)
+        b3_quote_client.get_daily_fluctuation_history(TICKER)
 
 
 # ---------------------------------------------------------------------------
@@ -351,10 +356,10 @@ def test_client_non_json_body_raises_unexpected_response(client):
 
 
 @respx.mock
-def test_client_timeout_raises_unexpected_response(client):
+def test_client_timeout_raises_unexpected_response(b3_quote_client):
     respx.get(FLUCTUATION_URL).mock(side_effect=httpx.TimeoutException("timed out"))
     with pytest.raises(B3UnexpectedResponseError, match="timed out"):
-        client.get_daily_fluctuation_history(TICKER)
+        b3_quote_client.get_daily_fluctuation_history(TICKER)
 
 
 # ---------------------------------------------------------------------------
@@ -459,13 +464,6 @@ def test_use_case_uppercases_ticker():
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def api_client():
-    from fastapi.testclient import TestClient
-    from app.main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
 def _make_quote(ticker: str = "PETR4") -> NormalizedQuote:
     return NormalizedQuote(
         ticker=ticker,
@@ -482,12 +480,12 @@ def _make_quote(ticker: str = "PETR4") -> NormalizedQuote:
     )
 
 
-def test_route_snapshot_200(api_client):
+def test_route_snapshot_200(client):
     with patch(
         "app.api.routes.quotes.get_daily_fluctuation",
         return_value=_make_quote(),
     ):
-        resp = api_client.get("/quotes/PETR4/snapshot")
+        resp = client.get("/quotes/PETR4/snapshot")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -497,35 +495,35 @@ def test_route_snapshot_200(api_client):
     assert data["delayed"] is True
 
 
-def test_route_snapshot_404(api_client):
+def test_route_snapshot_404(client):
     with patch(
         "app.api.routes.quotes.get_daily_fluctuation",
         side_effect=B3TickerNotFoundError("XXXXXX"),
     ):
-        resp = api_client.get("/quotes/XXXXXX/snapshot")
+        resp = client.get("/quotes/XXXXXX/snapshot")
 
     assert resp.status_code == 404
     detail = resp.json()["detail"]
     assert isinstance(detail, dict)
     assert detail.get("ticker") == "XXXXXX"
-def test_route_snapshot_503_temporary_block(api_client):
+def test_route_snapshot_503_temporary_block(client):
     with patch(
         "app.api.routes.quotes.get_daily_fluctuation",
         side_effect=B3TemporaryBlockError(403, "PETR4"),
     ):
-        resp = api_client.get("/quotes/PETR4/snapshot")
+        resp = client.get("/quotes/PETR4/snapshot")
 
     assert resp.status_code == 503
     detail = resp.json()["detail"]
     assert detail["error"] == "upstream_temporary_block"
 
 
-def test_route_snapshot_502_unexpected(api_client):
+def test_route_snapshot_502_unexpected(client):
     with patch(
         "app.api.routes.quotes.get_daily_fluctuation",
         side_effect=B3UnexpectedResponseError("bad JSON", status_code=200),
     ):
-        resp = api_client.get("/quotes/PETR4/snapshot")
+        resp = client.get("/quotes/PETR4/snapshot")
 
     assert resp.status_code == 502
     detail = resp.json()["detail"]
@@ -860,12 +858,12 @@ def test_use_case_get_intraday_series_uppercases_ticker():
 # ===========================================================================
 
 
-def test_route_latest_snapshot_200(api_client):
+def test_route_latest_snapshot_200(client):
     with patch(
         "app.api.routes.quotes.get_latest_snapshot",
         return_value=_make_latest_snapshot(),
     ):
-        resp = api_client.get("/quotes/PETR4")
+        resp = client.get("/quotes/PETR4")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -877,12 +875,12 @@ def test_route_latest_snapshot_200(api_client):
     assert data["delayed"] is True
 
 
-def test_route_latest_snapshot_404(api_client):
+def test_route_latest_snapshot_404(client):
     with patch(
         "app.api.routes.quotes.get_latest_snapshot",
         side_effect=B3TickerNotFoundError("XXXXXX"),
     ):
-        resp = api_client.get("/quotes/XXXXXX")
+        resp = client.get("/quotes/XXXXXX")
 
     assert resp.status_code == 404
     detail = resp.json()["detail"]
@@ -890,23 +888,23 @@ def test_route_latest_snapshot_404(api_client):
     assert detail.get("ticker") == "XXXXXX"
 
 
-def test_route_latest_snapshot_503(api_client):
+def test_route_latest_snapshot_503(client):
     with patch(
         "app.api.routes.quotes.get_latest_snapshot",
         side_effect=B3TemporaryBlockError(429, "PETR4"),
     ):
-        resp = api_client.get("/quotes/PETR4")
+        resp = client.get("/quotes/PETR4")
 
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "upstream_temporary_block"
 
 
-def test_route_intraday_series_502(api_client):
+def test_route_intraday_series_502(client):
     with patch(
         "app.api.routes.quotes.get_intraday_series",
         side_effect=B3UnexpectedResponseError("bad shape", status_code=200),
     ):
-        resp = api_client.get("/quotes/PETR4/intraday")
+        resp = client.get("/quotes/PETR4/intraday")
 
     assert resp.status_code == 502
     assert resp.json()["detail"]["error"] == "upstream_unexpected_response"
@@ -915,12 +913,6 @@ def test_route_intraday_series_502(api_client):
 # ===========================================================================
 # Ticker reader – read_tickers_from_csv
 # ===========================================================================
-
-from app.etl.ingestion.ticker_reader import (
-    TickerColumnMissingError,
-    read_tickers_from_csv,
-)
-from app.use_cases.quotes.batch_ingestion import run_batch_quote_ingestion
 
 
 def _write_instruments_csv(rows: list[dict], path: Path) -> None:
@@ -1403,12 +1395,12 @@ def test_batch_ingestion_empty_lstqtn_writes_empty_price_history(tmp_path):
 # ===========================================================================
 
 
-def test_route_intraday_series_200(api_client):
+def test_route_intraday_series_200(client):
     with patch(
         "app.api.routes.quotes.get_intraday_series",
         return_value=_make_intraday_series(),
     ):
-        resp = api_client.get("/quotes/PETR4/intraday")
+        resp = client.get("/quotes/PETR4/intraday")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -1421,7 +1413,7 @@ def test_route_intraday_series_200(api_client):
     assert data["delayed"] is True
 
 
-def test_route_intraday_series_empty_points(api_client):
+def test_route_intraday_series_empty_points(client):
     """A 200 with an empty points list is valid (market closed / pre-open)."""
     from app.integrations.b3.models import IntradaySeriesQuote
     empty_series = IntradaySeriesQuote(
@@ -1435,19 +1427,19 @@ def test_route_intraday_series_empty_points(api_client):
         raw_data=None,
     )
     with patch("app.api.routes.quotes.get_intraday_series", return_value=empty_series):
-        resp = api_client.get("/quotes/PETR4/intraday")
+        resp = client.get("/quotes/PETR4/intraday")
 
     assert resp.status_code == 200
     assert resp.json()["point_count"] == 0
     assert resp.json()["points"] == []
 
 
-def test_route_intraday_series_404(api_client):
+def test_route_intraday_series_404(client):
     with patch(
         "app.api.routes.quotes.get_intraday_series",
         side_effect=B3TickerNotFoundError("XXXXXX"),
     ):
-        resp = api_client.get("/quotes/XXXXXX/intraday")
+        resp = client.get("/quotes/XXXXXX/intraday")
 
     assert resp.status_code == 404
     detail = resp.json()["detail"]
@@ -1455,12 +1447,12 @@ def test_route_intraday_series_404(api_client):
     assert detail.get("ticker") == "XXXXXX"
 
 
-def test_route_intraday_series_503(api_client):
+def test_route_intraday_series_503(client):
     with patch(
         "app.api.routes.quotes.get_intraday_series",
         side_effect=B3TemporaryBlockError(403, "PETR4"),
     ):
-        resp = api_client.get("/quotes/PETR4/intraday")
+        resp = client.get("/quotes/PETR4/intraday")
 
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "upstream_temporary_block"

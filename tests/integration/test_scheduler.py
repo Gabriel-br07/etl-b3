@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Load scheduler module by path (docker is not a package)
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 SCHEDULER_PATH = ROOT / "docker" / "scheduler.py"
 
 
