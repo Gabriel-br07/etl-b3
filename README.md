@@ -257,7 +257,72 @@ Copy `.env.example` to `.env` and adjust for your environment.
 
 ---
 
+## Prerequisites
+
+Before setting up the project locally, ensure you have the following installed:
+
+- **Python 3.13 or higher** — The project requires Python 3.13+ (see `requires-python` in `pyproject.toml`)
+- **uv** — The project uses `uv` as its package manager. This is required for installing dependencies and running development commands.
+
+### Installing uv
+
+The project does not specify a minimum `uv` version. Install the latest version using one of the methods below.
+
+#### Linux
+
+**Recommended: Standalone installer**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**Alternative methods:**
+- Homebrew: `brew install uv`
+- pip: `pip install uv`
+- pipx: `pipx install uv`
+
+#### macOS
+
+**Recommended: Standalone installer**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**Alternative methods:**
+- Homebrew: `brew install uv`
+- MacPorts: `sudo port install uv`
+- pipx: `pipx install uv`
+- Cargo: `cargo install --locked uv`
+
+#### Windows
+
+**Recommended: PowerShell installer**
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**Alternative methods:**
+- WinGet: `winget install --id=astral-sh.uv -e`
+- Scoop: `scoop install main/uv`
+- pipx: `pipx install uv`
+
+### Verifying installation
+
+After installation, verify that `uv` is installed correctly:
+
+```bash
+uv --version
+```
+
+You may need to restart your terminal or add `uv` to your PATH if the command is not found. The standalone installers handle PATH configuration automatically.
+
+---
+
 ## Local development setup
+
+> **Note:** Ensure you have completed the [Prerequisites](#prerequisites) section above (Python 3.13+ and `uv` installed) before proceeding.
 
 ### 1. Install dependencies
 
