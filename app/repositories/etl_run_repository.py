@@ -55,6 +55,9 @@ class ETLRunRepository:
     ) -> ETLRun:
         """Update a run record with final status, timing, and row counts.
 
+        Use ``message=None`` on SUCCESS (default). On FAILED, pass the exception
+        or DB error string for troubleshooting — not success counters.
+
         The caller must commit the session to persist the changes.
         """
         run.status = status
