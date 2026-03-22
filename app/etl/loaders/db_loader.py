@@ -6,6 +6,7 @@ load_assets(db, rows)       → int  (dim_assets upsert)
 load_trades(db, rows)       → int  (fact_daily_trades upsert)
 load_daily_quotes(db, rows) → int  (fact_daily_quotes upsert – legacy)
 load_intraday_quotes(db, rows) → int  (fact_quotes hypertable insert)
+load_cotahist_quotes(db, rows) → int  (fact_cotahist_daily upsert)
 """
 
 from __future__ import annotations
@@ -13,8 +14,10 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
+from app.etl.transforms.cotahist_transforms import natural_key_tuple
 from app.repositories.asset_repository import AssetRepository
 
+from app.repositories.cotahist_quote_repository import CotahistQuoteRepository
 from app.repositories.fact_quote_repository import FactQuoteRepository
 from app.repositories.quote_repository import QuoteRepository
 from app.repositories.trade_repository import TradeRepository
@@ -23,6 +26,9 @@ logger = get_logger(__name__)
 
 # Chunk size for bulk upserts – avoids hitting PostgreSQL parameter limits
 _CHUNK_SIZE = 500
+
+# Log at most one INFO progress line per N COTAHIST chunks (remainder at DEBUG).
+_COTAHIST_LOG_EVERY_N_CHUNKS = 20
 
 
 def _chunked(lst: list, size: int):
@@ -101,4 +107,39 @@ def load_intraday_quotes(db: Session, rows: list[dict]) -> int:
     for chunk in _chunked(rows, _CHUNK_SIZE):
         total += repo.insert_many(chunk)
     logger.info("Intraday quotes inserted: %d rows", total)
+    return total
+
+
+def _dedupe_cotahist_batch(rows: list[dict]) -> list[dict]:
+    """One row per natural key (last wins) so a single INSERT cannot hit CardinalityViolation."""
+    by_key: dict[tuple, dict] = {}
+    for row in rows:
+        by_key[natural_key_tuple(row)] = row
+    return list(by_key.values())
+
+
+def load_cotahist_quotes(db: Session, rows: list[dict]) -> int:
+    """Upsert COTAHIST rows into fact_cotahist_daily. Returns affected row count."""
+    if not rows:
+        return 0
+    rows = _dedupe_cotahist_batch(rows)
+    repo = CotahistQuoteRepository(db)
+    total = 0
+    chunk_index = 0
+    for chunk in _chunked(rows, _CHUNK_SIZE):
+        chunk_index += 1
+        total += repo.upsert_many(chunk)
+        if chunk_index == 1 or chunk_index % _COTAHIST_LOG_EVERY_N_CHUNKS == 0:
+            logger.info(
+                "load_cotahist_quotes: chunk %d done, cumulative row ops=%d (intermediate chunks at DEBUG)",
+                chunk_index,
+                total,
+            )
+        else:
+            logger.debug(
+                "load_cotahist_quotes: chunk %d size=%d",
+                chunk_index,
+                len(chunk),
+            )
+    logger.info("COTAHIST quotes upserted: %d row operations", total)
     return total
