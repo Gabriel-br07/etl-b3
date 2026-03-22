@@ -37,6 +37,62 @@ ETL audit trail: etl_runs table records every pipeline execution (RUNNING → SU
 API layer (FastAPI): /assets, /quotes, /trades, /fact-quotes, /health, /etl
 ```
 
+### Annual COTAHIST (optional backfill)
+
+B3 publishes yearly ZIP files (`COTAHIST_A{year}.zip`) with a fixed-width TXT (245-byte records: header `00`, quotes `01`, trailer `99`). The workflow is **split into two stages**: fetch raw files (no database), then load via the same ETL entrypoint as the rest of the project.
+
+**Stage 1 — fetch / extract / validate (no Postgres)**  
+Script: [`scripts/run_b3_cotahist_annual.py`](scripts/run_b3_cotahist_annual.py). Downloads ZIPs, extracts normalized `.TXT`, and (by default) runs parse-only validation and logs stats. Never writes `etl_runs` or `fact_cotahist_daily`.
+
+| Flag | Behavior |
+|------|----------|
+| *(default)* | Download ZIP, extract TXT, parse validation (log counters). |
+| `--dry-run` | Log URLs and paths only. |
+| `--download-only` | ZIP only. |
+| `--extract-only` | Extract from an **existing** ZIP only (no download). |
+| `--parse-only` | Download if needed, extract, parse validation. |
+| `--year` / `--from-year` `--to-year` | Year selection (default range from settings: **1986–2026**). |
+| `--data-dir` | Root directory (default: `B3_COTAHIST_ANNUAL_DIR`). |
+
+**Stage 2 — load into the database**  
+Script: [`scripts/run_etl.py`](scripts/run_etl.py). **Default** and **`--run-all`** run annual COTAHIST after the other steps: they auto-scan `B3_COTAHIST_ANNUAL_DIR` for `**/COTAHIST_A*.TXT` (same glob as `--cotahist-dir`) and call `run_cotahist_annual_pipeline` per file (audit + upsert into **`fact_cotahist_daily`**). If no TXTs are found, the step is **skipped** with a warning (run Stage 1 first if you expect data). **`--run-cotahist-annual`** runs **only** COTAHIST and still **requires** resolved inputs (or files under the annual root via the same glob when you pass no path flags). Narrow the default load with `--cotahist-year`, `--cotahist-txt`, `--cotahist-dir`, etc. A large tree of annual files can make a full `run_etl` run slow.
+
+```powershell
+# Stage 1
+uv run python scripts/run_b3_cotahist_annual.py --dry-run
+uv run python scripts/run_b3_cotahist_annual.py --year 2023
+uv run python scripts/run_b3_cotahist_annual.py --from-year 2020 --to-year 2022
+uv run python scripts/run_b3_cotahist_annual.py --download-only --year 2023
+uv run python scripts/run_b3_cotahist_annual.py --extract-only --year 2023
+uv run python scripts/run_b3_cotahist_annual.py --parse-only --year 2023
+
+# Stage 2 (after TXT files exist under the annual root or use explicit paths)
+uv run python scripts/run_etl.py
+uv run python scripts/run_etl.py --run-cotahist-annual --cotahist-year 2023
+uv run python scripts/run_etl.py --run-cotahist-annual --cotahist-from-year 2020 --cotahist-to-year 2022
+uv run python scripts/run_etl.py --run-cotahist-annual --cotahist-txt data/raw/b3/cotahist_annual/2023/COTAHIST_A2023.TXT
+uv run python scripts/run_etl.py --run-cotahist-annual --cotahist-dir data/raw/b3/cotahist_annual
+```
+
+- **Raw files:** `{B3_COTAHIST_ANNUAL_DIR}/{year}/COTAHIST_A{year}.zip` (+ extracted `COTAHIST_A{year}.TXT`). Default directory: `data/raw/b3/cotahist_annual`.
+- **Legacy ZIP layout:** Through 2001, B3 often ships a single inner file named `COTAHIST.A{year}` or `COTAHIST_A{year}` **without** a `.txt` extension (from 2002 onward the inner name is usually `COTAHIST_A{year}.TXT`). Extraction detects all of these and writes a normalized `COTAHIST_A{year}.TXT` beside the ZIP for parsing.
+- **Pipeline:** `run_cotahist_annual_pipeline` in [`app/etl/orchestration/pipeline.py`](app/etl/orchestration/pipeline.py)
+- **Layout reference:** [Historical quotations layout (B3 PDF)](https://www.b3.com.br/data/files/65/50/AD/26/29C8B51095EE46B5790D8AA8/HistoricalQuotations_B3.pdf)
+
+**Source-of-truth / overlap**
+
+| Store | Grain | Notes |
+|-------|--------|--------|
+| `fact_daily_quotes` | `(ticker, trade_date)` from negocios CSV | Unchanged; daily pipeline remains authoritative for this table. |
+| `fact_quotes` | Intraday `(ticker, quoted_at)` | Unrelated to COTAHIST. |
+| `fact_cotahist_daily` | Full B3 type-01 natural key (date, codneg, BDI, market type, spec, term, moeda, expiration key, ISIN, distribution, …) | Authoritative for annual file content at that key. **No automatic writes** into the daily quote tables. The same calendar date + ticker may appear in both `fact_daily_quotes` and `fact_cotahist_daily` with different semantics; consumers choose the source. |
+
+**Idempotency:** upsert on `uq_cotahist_natural_key` — rerunning the same year/file is safe. **Last successful load wins** for that key (mutable fields and `ingested_at` / `source_file_name` refresh on conflict).
+
+Configuration: `b3_cotahist_*` and `b3_cotahist_annual_dir` in [`app/core/config.py`](app/core/config.py) (base URL, timeouts, retries, year range, on-disk root). Some future years may 404 until B3 publishes the file.
+
+**COTAHIST-only `run_etl`:** If you run only `--run-cotahist-annual` with explicit `--cotahist-txt` files, the orchestrator skips validation of `B3_DATA_DIR` (so a placeholder `data/sample` path does not block loads).
+
 ---
 
 ## How the load flow works
@@ -70,6 +126,7 @@ Key properties:
 | `run_instruments_and_trades_pipeline(csv, trades, date)` | `app/etl/orchestration/pipeline.py` | `dim_assets`, `fact_daily_trades`, `etl_runs` |
 | `run_intraday_quotes_pipeline(jsonl_path)` | `app/etl/orchestration/pipeline.py` | `fact_quotes`, `etl_runs` |
 | `run_daily_quotes_pipeline(...)` | `app/etl/orchestration/pipeline.py` | `fact_daily_quotes`, `etl_runs` |
+| `run_cotahist_annual_pipeline(txt_path)` | `app/etl/orchestration/pipeline.py` | `fact_cotahist_daily`, `etl_runs` |
 
 ### Loaders and repositories
 
@@ -80,6 +137,7 @@ pipeline.py
        ├─ load_trades(db, rows)           → TradeRepository.upsert_many()
        ├─ load_daily_quotes(db, rows)     → QuoteRepository.upsert_many()   (legacy)
        └─ load_intraday_quotes(db, rows)  → FactQuoteRepository.insert_many()
+       └─ load_cotahist_quotes(db, rows)  → CotahistQuoteRepository.upsert_many()
 ```
 
 Repositories **never call `db.commit()`** — the caller (`managed_session`) commits once at the end of the block to provide atomicity across all repository calls.
@@ -94,6 +152,7 @@ Repositories **never call `db.commit()`** — the caller (`managed_session`) com
 | `fact_daily_trades` | Consolidated trading data by asset/date (NegociosConsolidados) |
 | `fact_daily_quotes` | Daily consolidated quotes (legacy, kept for API compatibility) |
 | `fact_quotes` | Intraday time-series quotes — **TimescaleDB hypertable** partitioned on `quoted_at` |
+| `fact_cotahist_daily` | Annual COTAHIST type-01 rows (full B3 grain; upsert on natural key) |
 | `etl_runs` | ETL observability: pipeline name, status, rows inserted/failed, source file/date |
 
 ---
@@ -616,6 +675,8 @@ uv run pytest tests/e2e -m e2e -v
 | `tests/integration/test_cli_entrypoints.py` | CLI `main()` dispatch (mocked pipelines/scrapers). |
 | `tests/integration/test_run_daily_batch.py` | `docker/run_daily_batch.sh` contract (bash `-n`, expected invocations). |
 | `tests/integration/test_db_smoke.py` | `SELECT 1` against real Postgres when available (skipped if DB down). |
+| `tests/integration/test_cotahist_db.py` | COTAHIST ingest idempotency on `fact_cotahist_daily` (`-m db`). |
+| `tests/unit/test_cotahist_*.py` | COTAHIST URL, ZIP extract, parser, normaliser, stats. |
 | `tests/e2e/test_api_blackbox.py` | `httpx` against running API (`E2E_BASE_URL`). |
 | `tests/conftest.py` | Shared `client` fixture (`TestClient`). |
 | `tests/fixtures/` | Static CSV samples and Polars builders. |
