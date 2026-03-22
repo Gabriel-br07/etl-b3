@@ -7,10 +7,11 @@ points from `app.etl.orchestration.pipeline`:
 - instruments (+ optional trades)  -> run_instruments_and_trades_pipeline
 - daily quotes (normalized negocios CSV) -> run_daily_quotes_pipeline
 - intraday quotes (JSONL daily_fluctuation_*.jsonl) -> run_intraday_quotes_pipeline
+- annual COTAHIST (fixed-width ``COTAHIST_A*.TXT``) -> run_cotahist_annual_pipeline
 
 Usage examples
 --------------
-# Run all (default): auto-discover files under B3_DATA_DIR
+# Run all (default): auto-discover under B3_DATA_DIR and annual COTAHIST under B3_COTAHIST_ANNUAL_DIR
 python scripts/run_etl.py
 
 # Explicit files and date
@@ -27,6 +28,12 @@ Notes
 - If a file is not provided, the script attempts auto-discovery under
   B3_DATA_DIR. Missing auto-discovered files only produce warnings and the
   corresponding step is skipped.
+- Default / ``--run-all`` also auto-discovers annual COTAHIST under
+  ``B3_COTAHIST_ANNUAL_DIR`` (every ``**/COTAHIST_A*.TXT``). If none are
+  found, a warning is logged and that step is skipped (unlike
+  ``--run-cotahist-annual`` alone, which requires inputs).
+- Large annual trees can make a full run slow; Stage 1 fetch stays in
+  ``scripts/run_b3_cotahist_annual.py``.
 - The script uses lazy imports to avoid loading heavy modules until needed.
 """
 
@@ -39,7 +46,7 @@ import time
 import json
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 # Ensure project root is in sys.path when running as a plain script
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -155,9 +162,63 @@ def resolve_trades_sibling(instruments_csv: Path) -> Optional[Path]:
     return None
 
 
+_COTAHIST_TXT_YEAR = re.compile(r"COTAHIST_A(\d{4})\.TXT$", re.I)
+
+
+def _cotahist_txt_sort_key(path: Path) -> tuple:
+    m = _COTAHIST_TXT_YEAR.search(path.name)
+    if m:
+        return (0, int(m.group(1)), str(path))
+    return (1, path.name.lower(), str(path))
+
+
+def resolve_cotahist_txt_files(
+    *,
+    cotahist_txt: Sequence[Path] | None,
+    cotahist_year: int | None,
+    cotahist_from_year: int | None,
+    cotahist_to_year: int | None,
+    cotahist_dir: Path | None,
+    cotahist_data_dir: Path | None,
+    settings_root: str,
+) -> list[Path]:
+    """Resolve one or more COTAHIST TXT paths from CLI arguments."""
+    root = Path(cotahist_data_dir) if cotahist_data_dir is not None else Path(settings_root)
+    out: list[Path] = []
+
+    if cotahist_txt:
+        for p in cotahist_txt:
+            out.append(p.resolve())
+
+    if cotahist_year is not None:
+        out.append((root / str(cotahist_year) / f"COTAHIST_A{cotahist_year}.TXT").resolve())
+
+    if cotahist_from_year is not None and cotahist_to_year is not None:
+        lo, hi = cotahist_from_year, cotahist_to_year
+        if lo > hi:
+            lo, hi = hi, lo
+        for y in range(lo, hi + 1):
+            out.append((root / str(y) / f"COTAHIST_A{y}.TXT").resolve())
+
+    if cotahist_dir is not None:
+        base = cotahist_dir.resolve()
+        found = sorted(base.glob("**/COTAHIST_A*.TXT"), key=_cotahist_txt_sort_key)
+        out.extend(found)
+
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return unique
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run B3 ETL pipelines (instruments, trades, daily quotes, intraday quotes)",
+        description=(
+            "Run B3 ETL pipelines (instruments, trades, daily quotes, intraday quotes, annual COTAHIST)"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -205,36 +266,123 @@ def main() -> None:
         help="Target date YYYY-MM-DD (used in the etl_runs audit row). Defaults to today.",
     )
 
+    parser.add_argument(
+        "--cotahist-txt",
+        type=Path,
+        action="append",
+        default=None,
+        help=(
+            "Path to a COTAHIST_A*.TXT file (repeatable). "
+            "Used in default/--run-all or with --run-cotahist-annual."
+        ),
+    )
+    parser.add_argument(
+        "--cotahist-year",
+        type=int,
+        default=None,
+        help="Load canonical TXT under cotahist root: {root}/{year}/COTAHIST_A{year}.TXT",
+    )
+    parser.add_argument(
+        "--cotahist-from-year",
+        type=int,
+        default=None,
+        help="Inclusive start year (use with --cotahist-to-year)",
+    )
+    parser.add_argument(
+        "--cotahist-to-year",
+        type=int,
+        default=None,
+        help="Inclusive end year (use with --cotahist-from-year)",
+    )
+    parser.add_argument(
+        "--cotahist-dir",
+        type=Path,
+        default=None,
+        help="Directory: load every **/COTAHIST_A*.TXT (sorted by year from filename)",
+    )
+    parser.add_argument(
+        "--cotahist-data-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Root for year-based paths (default: B3_COTAHIST_ANNUAL_DIR). "
+            "Overrides settings for --cotahist-year / --cotahist-from-year only."
+        ),
+    )
+
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--run-all", dest="mode_all", action="store_true", help="Run all pipelines (default)")
     group.add_argument("--run-instruments", dest="run_instruments", action="store_true", help="Run instruments pipeline only")
     group.add_argument("--run-trades", dest="run_trades", action="store_true", help="Run trades pipeline only (requires trades file)")
     group.add_argument("--run-daily-quotes", dest="run_daily_quotes", action="store_true", help="Run daily quotes pipeline only (CSV)")
     group.add_argument("--run-quotes", dest="run_quotes", action="store_true", help="Run intraday quotes pipeline only (JSONL)")
+    group.add_argument(
+        "--run-cotahist-annual",
+        dest="run_cotahist_annual",
+        action="store_true",
+        help="Run annual COTAHIST pipeline only (fixed-width TXT → fact_cotahist_daily)",
+    )
 
     args = parser.parse_args()
 
+    if (args.cotahist_from_year is not None or args.cotahist_to_year is not None) and (
+        args.cotahist_from_year is None or args.cotahist_to_year is None
+    ):
+        logger.error("--cotahist-from-year and --cotahist-to-year must be used together")
+        sys.exit(2)
+    if args.cotahist_year is not None and (
+        args.cotahist_from_year is not None or args.cotahist_to_year is not None
+    ):
+        logger.error("Use either --cotahist-year or --cotahist-from-year/--cotahist-to-year, not both")
+        sys.exit(2)
+
     target_date: date = args.date or date.today()
 
-    # Determine which steps to run. Default: run all steps in order.
-    if args.mode_all or (not any([args.run_instruments, args.run_trades, args.run_daily_quotes, args.run_quotes])):
+    any_single_mode = any(
+        [
+            args.run_instruments,
+            args.run_trades,
+            args.run_daily_quotes,
+            args.run_quotes,
+            args.run_cotahist_annual,
+        ]
+    )
+
+    # Determine which steps to run. Default / --run-all: all pipelines including annual COTAHIST.
+    if args.mode_all or not any_single_mode:
         run_instruments_step = True
         run_trades_step = True
         run_daily_quotes_step = True
         run_intraday_quotes_step = True
+        run_cotahist_annual_step = True
     else:
         run_instruments_step = bool(args.run_instruments)
         run_trades_step = bool(args.run_trades)
         run_daily_quotes_step = bool(args.run_daily_quotes)
         run_intraday_quotes_step = bool(args.run_quotes)
+        run_cotahist_annual_step = bool(args.run_cotahist_annual)
+
+    cotahist_only_mode = bool(any_single_mode and args.run_cotahist_annual)
 
     summary: dict = {"date": str(target_date), "pipelines": {}, "success": True}
 
+    requires_b3_data_dir = (
+        run_instruments_step or run_trades_step or run_daily_quotes_step or run_intraday_quotes_step
+    )
     data_dir = Path(settings.b3_data_dir or "")
 
-    if not data_dir.exists() or not data_dir.is_dir():
-        logger.error("Invalid b3_data_dir: %s", data_dir, extra={"stage": "config_validation"})
-        sys.exit(1)
+    if requires_b3_data_dir:
+        if not data_dir.exists() or not data_dir.is_dir():
+            logger.error("Invalid b3_data_dir: %s", data_dir, extra={"stage": "config_validation"})
+            sys.exit(1)
+    elif not data_dir.exists():
+        # Cotahist-only (or unused): avoid failing when B3_DATA_DIR is a placeholder.
+        logger.info(
+            "Skipping b3_data_dir validation (no instruments/trades/daily/intraday steps); "
+            "configured path may be absent: %s",
+            data_dir,
+            extra={"stage": "config_validation"},
+        )
 
     logger.info("Starting ETL orchestrator", extra={"date": str(target_date), "data_dir": str(data_dir)})
 
@@ -250,112 +398,236 @@ def main() -> None:
     _validate_explicit_path(args.trades, "trades")
     _validate_explicit_path(args.daily_quotes, "daily_quotes")
     _validate_explicit_path(args.quotes, "quotes")
+    if args.cotahist_txt:
+        for cpath in args.cotahist_txt:
+            _validate_explicit_path(cpath, "cotahist_txt")
 
     instruments_csv: Optional[Path] = None
     instruments_explicit = args.instruments is not None
-    if args.instruments:
-        instruments_csv = args.instruments
-        logger.info("Using explicit instruments file", extra={"pipeline": "resolve", "source_file": str(instruments_csv)})
-    else:
-        try:
-            from app.etl.orchestration.csv_resolver import resolve_instruments_csv, CSVNotFoundError
-
-            logger.info("Auto-discovering instruments CSV", extra={"pipeline": "resolve", "data_dir": str(data_dir)})
-            try:
-                instruments_csv = resolve_instruments_csv(data_dir=data_dir)
-                # Improvement 3: File stability check for auto-discovered files
-                if instruments_csv and not wait_for_stable_file(instruments_csv):
-                    logger.warning("Instruments CSV is not stable (still being written): %s — skipping", instruments_csv, extra={"pipeline": "resolve", "source_file": str(instruments_csv)})
-                    instruments_csv = None
-            except CSVNotFoundError as exc:
-                logger.warning("Cannot resolve instruments CSV: %s", exc, extra={"pipeline": "resolve"})
-                instruments_csv = None
-        except Exception as exc:
-            logger.exception("Failed to import CSV resolver: %s", exc, extra={"stage": "resolve_import"})
-            instruments_csv = None
-
-    if instruments_csv is not None:
-        logger.info("Instruments file resolved", extra={"pipeline": "resolve", "source_file": str(instruments_csv)})
-    elif run_instruments_step and instruments_explicit:
-        # Explicit but missing => failure (already validated earlier, defensive)
-        logger.error("Requested instruments step but instruments file is missing.", extra={"pipeline": "resolve"})
-        sys.exit(1)
-    else:
-        logger.info("No instruments file found — instruments step will be skipped.", extra={"pipeline": "resolve"})
-
     trades_file: Optional[Path] = None
     trades_explicit = args.trades is not None
-    if args.trades:
-        trades_file = args.trades
-        logger.info("Using explicit trades file", extra={"pipeline": "resolve", "source_file": str(trades_file)})
-    else:
-        if instruments_csv is not None:
-            trades_file = resolve_trades_sibling(instruments_csv)
-        if trades_file is None:
-            candidates = list(data_dir.glob("**/negocios_consolidados_*.normalized.csv"))
-            if candidates:
-                trades_file = sorted(candidates)[-1]
-        # If auto-discovered, check stability
-        if trades_file is not None and not trades_explicit:
-            if not wait_for_stable_file(trades_file):
-                logger.warning("Trades CSV is not stable (still being written): %s — skipping", trades_file, extra={"pipeline": "resolve", "source_file": str(trades_file)})
-                trades_file = None
-
-    if trades_file is not None:
-        logger.info("Trades file resolved", extra={"pipeline": "resolve", "source_file": str(trades_file)})
-    else:
-        logger.info("No trades file found — trades/daily-quotes steps may be skipped.", extra={"pipeline": "resolve"})
-        if trades_explicit and (run_trades_step or run_daily_quotes_step):
-            logger.error("Requested trades/daily-quotes step but trades file is missing.", extra={"pipeline": "resolve"})
-            sys.exit(1)
-
-    # ------------------------------------------------------------------
-    # Resolve daily quotes CSV (use --daily-quotes or fall back to trades_file)
-    # ------------------------------------------------------------------
     daily_quotes_file: Optional[Path] = None
     daily_quotes_explicit = args.daily_quotes is not None
-    if args.daily_quotes:
-        daily_quotes_file = args.daily_quotes
-        logger.info("Using explicit daily quotes file", extra={"pipeline": "resolve", "source_file": str(daily_quotes_file)})
-    else:
-        # Reuse the resolved trades_file if available to avoid rediscovery
-        daily_quotes_file = trades_file
-
-    if daily_quotes_file is not None:
-        logger.info("Daily quotes file resolved", extra={"pipeline": "resolve", "source_file": str(daily_quotes_file)})
-    elif run_daily_quotes_step and daily_quotes_explicit:
-        logger.error("Requested daily-quotes step but daily quotes file is missing.", extra={"pipeline": "resolve"})
-        sys.exit(1)
-
-    # ------------------------------------------------------------------
-    # Resolve intraday JSONL
-    # ------------------------------------------------------------------
     jsonl_file: Optional[Path] = None
     jsonl_explicit = args.quotes is not None
-    if args.quotes:
-        jsonl_file = args.quotes
-        logger.info("Using explicit JSONL file", extra={"pipeline": "resolve", "source_file": str(jsonl_file)})
-    else:
-        jsonl_file = find_latest_jsonl(data_dir)
-        if jsonl_file is not None and not wait_for_stable_file(jsonl_file):
-            logger.warning("JSONL file is not stable (still being written): %s — skipping", jsonl_file, extra={"pipeline": "resolve", "source_file": str(jsonl_file)})
-            jsonl_file = None
 
-    if jsonl_file is not None:
-        logger.info("Intraday JSONL resolved", extra={"pipeline": "resolve", "source_file": str(jsonl_file)})
-    else:
-        logger.info("No intraday JSONL found — intraday quotes step will be skipped.", extra={"pipeline": "resolve"})
-        if jsonl_explicit and run_intraday_quotes_step:
-            logger.error("Requested intraday-quotes step but JSONL file is missing.", extra={"pipeline": "resolve"})
+    if requires_b3_data_dir:
+        if args.instruments:
+            instruments_csv = args.instruments
+            logger.info(
+                "Using explicit instruments file",
+                extra={"pipeline": "resolve", "source_file": str(instruments_csv)},
+            )
+        else:
+            try:
+                from app.etl.orchestration.csv_resolver import CSVNotFoundError, resolve_instruments_csv
+
+                logger.info(
+                    "Auto-discovering instruments CSV",
+                    extra={"pipeline": "resolve", "data_dir": str(data_dir)},
+                )
+                try:
+                    instruments_csv = resolve_instruments_csv(data_dir=data_dir)
+                    if instruments_csv and not wait_for_stable_file(instruments_csv):
+                        logger.warning(
+                            "Instruments CSV is not stable (still being written): %s — skipping",
+                            instruments_csv,
+                            extra={"pipeline": "resolve", "source_file": str(instruments_csv)},
+                        )
+                        instruments_csv = None
+                except CSVNotFoundError as exc:
+                    logger.warning("Cannot resolve instruments CSV: %s", exc, extra={"pipeline": "resolve"})
+                    instruments_csv = None
+            except Exception as exc:
+                logger.exception("Failed to import CSV resolver: %s", exc, extra={"stage": "resolve_import"})
+                instruments_csv = None
+
+        if instruments_csv is not None:
+            logger.info(
+                "Instruments file resolved",
+                extra={"pipeline": "resolve", "source_file": str(instruments_csv)},
+            )
+        elif run_instruments_step and instruments_explicit:
+            logger.error(
+                "Requested instruments step but instruments file is missing.",
+                extra={"pipeline": "resolve"},
+            )
             sys.exit(1)
+        else:
+            logger.info(
+                "No instruments file found — instruments step will be skipped.",
+                extra={"pipeline": "resolve"},
+            )
+
+        if args.trades:
+            trades_file = args.trades
+            logger.info(
+                "Using explicit trades file",
+                extra={"pipeline": "resolve", "source_file": str(trades_file)},
+            )
+        else:
+            if instruments_csv is not None:
+                trades_file = resolve_trades_sibling(instruments_csv)
+            if trades_file is None:
+                candidates = list(data_dir.glob("**/negocios_consolidados_*.normalized.csv"))
+                if candidates:
+                    trades_file = sorted(candidates)[-1]
+            if trades_file is not None and not trades_explicit:
+                if not wait_for_stable_file(trades_file):
+                    logger.warning(
+                        "Trades CSV is not stable (still being written): %s — skipping",
+                        trades_file,
+                        extra={"pipeline": "resolve", "source_file": str(trades_file)},
+                    )
+                    trades_file = None
+
+        if trades_file is not None:
+            logger.info(
+                "Trades file resolved",
+                extra={"pipeline": "resolve", "source_file": str(trades_file)},
+            )
+        else:
+            logger.info(
+                "No trades file found — trades/daily-quotes steps may be skipped.",
+                extra={"pipeline": "resolve"},
+            )
+            if trades_explicit and (run_trades_step or run_daily_quotes_step):
+                logger.error(
+                    "Requested trades/daily-quotes step but trades file is missing.",
+                    extra={"pipeline": "resolve"},
+                )
+                sys.exit(1)
+
+        if args.daily_quotes:
+            daily_quotes_file = args.daily_quotes
+            logger.info(
+                "Using explicit daily quotes file",
+                extra={"pipeline": "resolve", "source_file": str(daily_quotes_file)},
+            )
+        else:
+            daily_quotes_file = trades_file
+
+        if daily_quotes_file is not None:
+            logger.info(
+                "Daily quotes file resolved",
+                extra={"pipeline": "resolve", "source_file": str(daily_quotes_file)},
+            )
+        elif run_daily_quotes_step and daily_quotes_explicit:
+            logger.error(
+                "Requested daily-quotes step but daily quotes file is missing.",
+                extra={"pipeline": "resolve"},
+            )
+            sys.exit(1)
+
+        if args.quotes:
+            jsonl_file = args.quotes
+            logger.info(
+                "Using explicit JSONL file",
+                extra={"pipeline": "resolve", "source_file": str(jsonl_file)},
+            )
+        else:
+            jsonl_file = find_latest_jsonl(data_dir)
+            if jsonl_file is not None and not wait_for_stable_file(jsonl_file):
+                logger.warning(
+                    "JSONL file is not stable (still being written): %s — skipping",
+                    jsonl_file,
+                    extra={"pipeline": "resolve", "source_file": str(jsonl_file)},
+                )
+                jsonl_file = None
+
+        if jsonl_file is not None:
+            logger.info(
+                "Intraday JSONL resolved",
+                extra={"pipeline": "resolve", "source_file": str(jsonl_file)},
+            )
+        else:
+            logger.info(
+                "No intraday JSONL found — intraday quotes step will be skipped.",
+                extra={"pipeline": "resolve"},
+            )
+            if jsonl_explicit and run_intraday_quotes_step:
+                logger.error(
+                    "Requested intraday-quotes step but JSONL file is missing.",
+                    extra={"pipeline": "resolve"},
+                )
+                sys.exit(1)
+    else:
+        logger.info(
+            "Skipping instruments/trades/daily-quotes/JSONL resolution "
+            "(only annual COTAHIST step selected)",
+            extra={"pipeline": "resolve"},
+        )
+
+    # ------------------------------------------------------------------
+    # Resolve annual COTAHIST TXT files
+    # ------------------------------------------------------------------
+    cotahist_files: list[Path] = []
+    if run_cotahist_annual_step:
+        annual_root = (
+            args.cotahist_data_dir.resolve()
+            if args.cotahist_data_dir is not None
+            else Path(settings.b3_cotahist_annual_dir).resolve()
+        )
+        has_explicit_cotahist_inputs = bool(
+            args.cotahist_txt
+            or args.cotahist_year is not None
+            or (
+                args.cotahist_from_year is not None
+                and args.cotahist_to_year is not None
+            )
+            or args.cotahist_dir is not None
+        )
+        cotahist_dir_for_resolve = args.cotahist_dir
+        if not has_explicit_cotahist_inputs:
+            cotahist_dir_for_resolve = annual_root
+
+        cotahist_files = resolve_cotahist_txt_files(
+            cotahist_txt=args.cotahist_txt or (),
+            cotahist_year=args.cotahist_year,
+            cotahist_from_year=args.cotahist_from_year,
+            cotahist_to_year=args.cotahist_to_year,
+            cotahist_dir=cotahist_dir_for_resolve,
+            cotahist_data_dir=args.cotahist_data_dir,
+            settings_root=settings.b3_cotahist_annual_dir,
+        )
+        if not cotahist_files:
+            if cotahist_only_mode:
+                logger.error(
+                    "COTAHIST annual step requested but no inputs: use --cotahist-txt, "
+                    "--cotahist-year, --cotahist-from-year/--cotahist-to-year, and/or --cotahist-dir, "
+                    "or place COTAHIST_A*.TXT under %s",
+                    annual_root,
+                    extra={"pipeline": "cotahist_resolve"},
+                )
+                sys.exit(2)
+            logger.warning(
+                "No annual COTAHIST TXT files found under %s (glob **/COTAHIST_A*.TXT). "
+                "Skipping COTAHIST load; fetch/extract with scripts/run_b3_cotahist_annual.py if needed.",
+                annual_root,
+                extra={"pipeline": "cotahist_resolve"},
+            )
+        if cotahist_files:
+            for cp in cotahist_files:
+                if not cp.is_file():
+                    logger.error("COTAHIST file missing: %s", cp, extra={"pipeline": "cotahist_resolve"})
+                    sys.exit(1)
+            logger.info(
+                "COTAHIST files resolved",
+                extra={
+                    "pipeline": "cotahist_resolve",
+                    "count": len(cotahist_files),
+                    "files": [str(x) for x in cotahist_files],
+                },
+            )
 
     # ------------------------------------------------------------------
     # Execute pipelines in the required order, using lazy imports
+    #
+    # record_audit=False: load data only; no etl_runs rows per step/file.
+    # Success/failure detail is in stdout JSON and logs. API/scheduler keep
+    # record_audit=True when calling pipelines directly.
     # ------------------------------------------------------------------
     overall_success = True
-
-    # Keep track of which pipeline names have already run to avoid duplicates
-    ran_pipelines: set[str] = set()
 
     # 1) instruments (+ optional trades)
     if run_instruments_step:
@@ -367,11 +639,12 @@ def main() -> None:
 
                 logger.info("Starting instruments+trades pipeline", extra={"pipeline": "instruments_and_trades", "source_file": str(instruments_csv), "trades_file": str(trades_file) if trades_file else None, "date": str(target_date)})
                 start = time.perf_counter()
-                result = run_instruments_and_trades_pipeline(instruments_csv, trades_file, target_date)
+                result = run_instruments_and_trades_pipeline(
+                    instruments_csv, trades_file, target_date, record_audit=False
+                )
                 duration = time.perf_counter() - start
 
                 summary["pipelines"]["instruments_and_trades"] = result
-                ran_pipelines.add("instruments_and_trades")
 
                 if not is_success(result):
                     logger.error("instruments+trades pipeline finished with non-success status", extra={"pipeline": "instruments_and_trades", "status": result.get("status"), "duration": duration})
@@ -400,11 +673,12 @@ def main() -> None:
 
                     logger.info("Starting trades-only pipeline (via instruments_and_trades entry)", extra={"pipeline": "trades", "trades_file": str(trades_file), "date": str(target_date)})
                     start = time.perf_counter()
-                    result = run_instruments_and_trades_pipeline(instruments_csv, trades_file, target_date)
+                    result = run_instruments_and_trades_pipeline(
+                        instruments_csv, trades_file, target_date, record_audit=False
+                    )
                     duration = time.perf_counter() - start
 
                     summary["pipelines"]["trades"] = result
-                    ran_pipelines.add("trades")
 
                     if not is_success(result):
                         logger.error("trades pipeline finished with non-success status", extra={"pipeline": "trades", "status": result.get("status"), "duration": duration})
@@ -427,11 +701,12 @@ def main() -> None:
 
                 logger.info("Starting daily quotes pipeline", extra={"pipeline": "daily_quotes", "source_file": str(daily_quotes_file), "date": str(target_date)})
                 start = time.perf_counter()
-                result = run_daily_quotes_pipeline(daily_quotes_file, target_date)
+                result = run_daily_quotes_pipeline(
+                    daily_quotes_file, target_date, record_audit=False
+                )
                 duration = time.perf_counter() - start
 
                 summary["pipelines"]["daily_quotes"] = result
-                ran_pipelines.add("daily_quotes")
 
                 if not is_success(result):
                     logger.error("daily quotes pipeline finished with non-success status", extra={"pipeline": "daily_quotes", "status": result.get("status"), "duration": duration})
@@ -454,11 +729,10 @@ def main() -> None:
 
                 logger.info("Starting intraday quotes pipeline", extra={"pipeline": "intraday_quotes", "source_file": str(jsonl_file)})
                 start = time.perf_counter()
-                result = run_intraday_quotes_pipeline(jsonl_file)
+                result = run_intraday_quotes_pipeline(jsonl_file, record_audit=False)
                 duration = time.perf_counter() - start
 
                 summary["pipelines"]["intraday_quotes"] = result
-                ran_pipelines.add("intraday_quotes")
 
                 if not is_success(result):
                     logger.error("intraday quotes pipeline finished with non-success status", extra={"pipeline": "intraday_quotes", "status": result.get("status"), "duration": duration})
@@ -468,6 +742,52 @@ def main() -> None:
                     logger.info("intraday quotes pipeline completed successfully", extra={"pipeline": "intraday_quotes", "duration": duration})
             except Exception as exc:
                 logger.exception("intraday quotes pipeline raised an exception: %s", exc, extra={"pipeline": "intraday_quotes"})
+                overall_success = False
+                summary["success"] = False
+
+    # 5) annual COTAHIST (fixed-width TXT)
+    if run_cotahist_annual_step:
+        if not cotahist_files:
+            logger.warning("Skipping COTAHIST annual pipeline: no TXT files resolved.", extra={"pipeline": "cotahist_annual"})
+        else:
+            try:
+                from app.etl.orchestration.pipeline import run_cotahist_annual_pipeline
+
+                results: list[dict] = []
+                for txt_path in cotahist_files:
+                    logger.info(
+                        "Starting COTAHIST annual pipeline",
+                        extra={"pipeline": "cotahist_annual", "source_file": str(txt_path)},
+                    )
+                    start = time.perf_counter()
+                    result = run_cotahist_annual_pipeline(
+                        txt_path,
+                        record_audit=False,
+                        track_in_file_duplicates=False,
+                    )
+                    duration = time.perf_counter() - start
+                    results.append({"file": str(txt_path), "result": result, "duration": duration})
+                    if not is_success(result):
+                        logger.error(
+                            "COTAHIST annual pipeline non-success",
+                            extra={
+                                "pipeline": "cotahist_annual",
+                                "source_file": str(txt_path),
+                                "status": result.get("status"),
+                                "duration": duration,
+                            },
+                        )
+                        overall_success = False
+                        summary["success"] = False
+                    else:
+                        logger.info(
+                            "COTAHIST annual pipeline completed",
+                            extra={"pipeline": "cotahist_annual", "source_file": str(txt_path), "duration": duration},
+                        )
+
+                summary["pipelines"]["cotahist_annual"] = results
+            except Exception as exc:
+                logger.exception("COTAHIST annual pipeline raised an exception: %s", exc, extra={"pipeline": "cotahist_annual"})
                 overall_success = False
                 summary["success"] = False
 
