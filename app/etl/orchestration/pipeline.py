@@ -460,7 +460,7 @@ def run_cotahist_annual_pipeline(
     txt_path: Path,
     *,
     record_audit: bool = True,
-    track_in_file_duplicates: bool = True,
+    track_in_file_duplicates: bool = False,
 ) -> dict:
     """Parse a COTAHIST annual TXT and upsert into ``fact_cotahist_daily``.
 
