@@ -7,7 +7,8 @@ points from `app.etl.orchestration.pipeline`:
 - instruments (+ optional trades)  -> run_instruments_and_trades_pipeline
 - daily quotes (normalized negocios CSV) -> run_daily_quotes_pipeline
 - intraday quotes (JSONL daily_fluctuation_*.jsonl) -> run_intraday_quotes_pipeline
-- annual COTAHIST (fixed-width ``COTAHIST_A*.TXT``) -> run_cotahist_annual_pipeline
+- annual COTAHIST (fixed-width ``COTAHIST_A*.TXT``) -> ``run_cotahist_annual_pipeline``
+  (one file) or ``run_cotahist_historical_pipeline`` (multiple files: one ``etl_run``, 2-year windows)
 
 Usage examples
 --------------
@@ -53,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.logging import configure_logging, get_logger
 from app.core.config import B3_COTAHIST_ANNUAL_DIR_DEFAULT, settings
+from app.etl.orchestration.cotahist_historical_planning import cotahist_txt_glob_sort_key
 
 # Configure logging early so lazy-imported modules inherit configuration
 configure_logging()
@@ -162,16 +164,6 @@ def resolve_trades_sibling(instruments_csv: Path) -> Optional[Path]:
     return None
 
 
-_COTAHIST_TXT_YEAR = re.compile(r"COTAHIST_A(\d{4})\.TXT$", re.I)
-
-
-def _cotahist_txt_sort_key(path: Path) -> tuple:
-    m = _COTAHIST_TXT_YEAR.search(path.name)
-    if m:
-        return (0, int(m.group(1)), str(path))
-    return (1, path.name.lower(), str(path))
-
-
 def _normalized_cotahist_settings_root(settings_root: str) -> str:
     s = str(settings_root).strip()
     return B3_COTAHIST_ANNUAL_DIR_DEFAULT if not s else s
@@ -187,7 +179,12 @@ def resolve_cotahist_txt_files(
     cotahist_data_dir: Path | None,
     settings_root: str,
 ) -> list[Path]:
-    """Resolve one or more COTAHIST TXT paths from CLI arguments."""
+    """Resolve one or more COTAHIST TXT paths from CLI arguments.
+
+    The returned list is de-duplicated then sorted with ``cotahist_txt_glob_sort_key``
+    (same key as the ``cotahist_dir`` glob) so order does not depend on which flags
+    appeared first on the CLI.
+    """
     root = (
         Path(cotahist_data_dir)
         if cotahist_data_dir is not None
@@ -212,7 +209,7 @@ def resolve_cotahist_txt_files(
     if cotahist_dir is not None:
         base = cotahist_dir.resolve()
         if base.is_dir():
-            found = sorted(base.glob("**/COTAHIST_A*.TXT"), key=_cotahist_txt_sort_key)
+            found = sorted(base.glob("**/COTAHIST_A*.TXT"), key=cotahist_txt_glob_sort_key)
             out.extend(found)
         else:
             logger.warning(
@@ -226,7 +223,7 @@ def resolve_cotahist_txt_files(
         if p not in seen:
             seen.add(p)
             unique.append(p)
-    return unique
+    return sorted(unique, key=cotahist_txt_glob_sort_key)
 
 
 def main() -> None:
@@ -767,28 +764,40 @@ def main() -> None:
             logger.warning("Skipping COTAHIST annual pipeline: no TXT files resolved.", extra={"pipeline": "cotahist_annual"})
         else:
             try:
-                from app.etl.orchestration.pipeline import run_cotahist_annual_pipeline
+                from app.etl.orchestration.pipeline import (
+                    run_cotahist_annual_pipeline,
+                    run_cotahist_historical_pipeline,
+                )
 
-                results: list[dict] = []
-                for txt_path in cotahist_files:
+                if len(cotahist_files) > 1:
+                    results_hist: list[dict] = []
                     logger.info(
-                        "Starting COTAHIST annual pipeline",
-                        extra={"pipeline": "cotahist_annual", "source_file": str(txt_path)},
+                        "Starting COTAHIST historical pipeline (multi-file)",
+                        extra={
+                            "pipeline": "cotahist_historical",
+                            "file_count": len(cotahist_files),
+                        },
                     )
                     start = time.perf_counter()
-                    result = run_cotahist_annual_pipeline(
-                        txt_path,
+                    result = run_cotahist_historical_pipeline(
+                        cotahist_files,
                         record_audit=True,
                         track_in_file_duplicates=False,
                     )
                     duration = time.perf_counter() - start
-                    results.append({"file": str(txt_path), "result": result, "duration": duration})
+                    results_hist.append(
+                        {
+                            "historical_batch": True,
+                            "files": [str(p) for p in cotahist_files],
+                            "result": result,
+                            "duration": duration,
+                        }
+                    )
                     if not is_success(result):
                         logger.error(
-                            "COTAHIST annual pipeline non-success",
+                            "COTAHIST historical pipeline non-success",
                             extra={
-                                "pipeline": "cotahist_annual",
-                                "source_file": str(txt_path),
+                                "pipeline": "cotahist_historical",
                                 "status": result.get("status"),
                                 "duration": duration,
                             },
@@ -797,18 +806,83 @@ def main() -> None:
                         summary["success"] = False
                     else:
                         logger.info(
-                            "COTAHIST annual pipeline completed",
-                            extra={"pipeline": "cotahist_annual", "source_file": str(txt_path), "duration": duration},
+                            "COTAHIST historical pipeline completed",
+                            extra={"pipeline": "cotahist_historical", "duration": duration},
                         )
+                    summary["pipelines"]["cotahist_historical"] = results_hist
+                else:
+                    results_annual: list[dict] = []
+                    for txt_path in cotahist_files:
+                        logger.info(
+                            "Starting COTAHIST annual pipeline",
+                            extra={"pipeline": "cotahist_annual", "source_file": str(txt_path)},
+                        )
+                        start = time.perf_counter()
+                        result = run_cotahist_annual_pipeline(
+                            txt_path,
+                            record_audit=True,
+                            track_in_file_duplicates=False,
+                        )
+                        duration = time.perf_counter() - start
+                        results_annual.append({"file": str(txt_path), "result": result, "duration": duration})
+                        if not is_success(result):
+                            logger.error(
+                                "COTAHIST annual pipeline non-success",
+                                extra={
+                                    "pipeline": "cotahist_annual",
+                                    "source_file": str(txt_path),
+                                    "status": result.get("status"),
+                                    "duration": duration,
+                                },
+                            )
+                            overall_success = False
+                            summary["success"] = False
+                        else:
+                            logger.info(
+                                "COTAHIST annual pipeline completed",
+                                extra={
+                                    "pipeline": "cotahist_annual",
+                                    "source_file": str(txt_path),
+                                    "duration": duration,
+                                },
+                            )
 
-                summary["pipelines"]["cotahist_annual"] = results
+                    summary["pipelines"]["cotahist_annual"] = results_annual
             except Exception as exc:
-                logger.exception("COTAHIST annual pipeline raised an exception: %s", exc, extra={"pipeline": "cotahist_annual"})
+                logger.exception(
+                    "COTAHIST load step raised an exception: %s",
+                    exc,
+                    extra={"pipeline": "cotahist_load"},
+                )
                 overall_success = False
                 summary["success"] = False
 
     # Final summary and exit
     summary["success"] = overall_success
+
+    cotahist_hist = summary["pipelines"].get("cotahist_historical")
+    if cotahist_hist:
+        hist_result = cotahist_hist[0]["result"]
+        if is_success(hist_result):
+            logger.info(
+                "ETL certification: COTAHIST historical load succeeded",
+                extra={
+                    "pipeline": "cotahist_historical",
+                    "rows_upsert_ops": hist_result.get("rows_upsert_ops"),
+                    "files": hist_result.get("files"),
+                    "windows": hist_result.get("windows"),
+                },
+            )
+        else:
+            logger.error(
+                "ETL certification: COTAHIST historical load failed",
+                extra={
+                    "pipeline": "cotahist_historical",
+                    "status": hist_result.get("status"),
+                    "error": hist_result.get("error"),
+                },
+            )
+
     logger.info("ETL summary", extra={"summary": summary})
     print(json.dumps(summary, default=str))
 

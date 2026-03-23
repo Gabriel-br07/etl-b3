@@ -18,6 +18,9 @@ run_intraday_quotes_pipeline(jsonl_path)
 run_cotahist_annual_pipeline(txt_path)
     Loads fact_cotahist_daily from a COTAHIST_A*.TXT fixed-width file.
 
+run_cotahist_historical_pipeline(txt_paths)
+    Multi-file historical load: 2-year windows, 50k ingest batches, one ``etl_run``.
+
 By default each function records ``etl_runs`` audit rows. ``scripts/run_etl.py``
 uses ``record_audit=True`` for every step so CLI runs are auditable. Pass
 ``record_audit=False`` only for ad-hoc callers that intentionally skip ``etl_runs``
@@ -27,6 +30,7 @@ uses ``record_audit=True`` for every step so CLI runs are auditable. Pass
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
@@ -41,6 +45,12 @@ from app.etl.transforms.b3_transforms import (
     transform_instruments,
     transform_jsonl_quotes,
     transform_trades,
+)
+from app.etl.orchestration.cotahist_historical_planning import (
+    COTAHIST_HISTORICAL_INGEST_BATCH_SIZE,
+    cotahist_year_from_path,
+    group_paths_into_two_year_windows,
+    sort_cotahist_paths,
 )
 from app.repositories.etl_run_repository import ETLRunRepository
 from app.use_cases.quotes.cotahist_annual_ingestion import ingest_cotahist_txt_file
@@ -454,6 +464,123 @@ def run_intraday_quotes_pipeline(jsonl_path: Path, *, record_audit: bool = True)
         "status": ETLStatus.SUCCESS,
     }
     logger.info("[etl_pipeline] intraday quotes load done: %s", summary)
+    return summary
+
+
+def run_cotahist_historical_pipeline(
+    txt_paths: Sequence[Path | str],
+    *,
+    record_audit: bool = True,
+    track_in_file_duplicates: bool = False,
+) -> dict:
+    """Load multiple COTAHIST annual TXTs in 2-year windows with 50k ingest batches.
+
+    Uses a **single** ``etl_runs`` row for the whole job (``pipeline_name`` =
+    ``cotahist_historical``). Each file is committed in its own ``managed_session``
+    so earlier windows persist if a later step fails. Success leaves ``message``
+    NULL; any failure sets ``FAILED`` and stores ``str(exc)``.
+    """
+    paths = sort_cotahist_paths([Path(p) for p in txt_paths])
+    if not paths:
+        return {
+            "status": ETLStatus.SUCCESS,
+            "rows_upsert_ops": 0,
+            "files": 0,
+            "windows": 0,
+        }
+
+    y_lo = cotahist_year_from_path(paths[0])
+    y_hi = cotahist_year_from_path(paths[-1])
+    source_desc = f"cotahist_historical:{y_lo}-{y_hi}"
+    windows = group_paths_into_two_year_windows(paths)
+
+    logger.info(
+        "[etl_pipeline] starting COTAHIST historical load files=%s windows=%s",
+        len(paths),
+        len(windows),
+    )
+
+    run_id: int | None = None
+    if record_audit:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run = etl_repo.start_run(
+                "cotahist_historical",
+                source_file=source_desc,
+            )
+            audit_db.flush()
+            run_id = run.id
+
+    rows_touched = 0
+    try:
+        for window in windows:
+            for txt_path in window:
+                with managed_session() as db:
+                    ingest_summary = ingest_cotahist_txt_file(
+                        db,
+                        txt_path,
+                        track_in_file_duplicates=track_in_file_duplicates,
+                        batch_size=COTAHIST_HISTORICAL_INGEST_BATCH_SIZE,
+                        progress_heartbeat=False,
+                    )
+                    rows_touched += ingest_summary.db_upsert_operations
+    except Exception as exc:
+        logger.exception("[etl_pipeline] COTAHIST historical load FAILED: %s", exc)
+        if record_audit and run_id is not None:
+            try:
+                with managed_session() as audit_db:
+                    etl_repo = ETLRunRepository(audit_db)
+                    run_obj = etl_repo.get_by_id(run_id)
+                    if run_obj is None:
+                        logger.warning(
+                            "[etl_pipeline] could not reload ETL run id=%s to record failure",
+                            run_id,
+                        )
+                    else:
+                        etl_repo.finish_run(
+                            run_obj,
+                            ETLStatus.FAILED,
+                            message=str(exc),
+                            rows_inserted=rows_touched,
+                            rows_failed=1,
+                        )
+            except Exception:
+                logger.exception(
+                    "[etl_pipeline] COTAHIST historical FAILED but could not record audit run"
+                )
+        return {
+            "status": ETLStatus.FAILED,
+            "error": str(exc),
+            "rows_upsert_ops": rows_touched,
+            "files": len(paths),
+            "windows": len(windows),
+        }
+
+    if record_audit and run_id is not None:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run_obj = etl_repo.get_by_id(run_id)
+            if run_obj is None:
+                logger.warning(
+                    "[etl_pipeline] could not reload ETL run id=%s to record success",
+                    run_id,
+                )
+            else:
+                etl_repo.finish_run(
+                    run_obj,
+                    ETLStatus.SUCCESS,
+                    message=None,
+                    rows_inserted=rows_touched,
+                    rows_failed=0,
+                )
+
+    summary = {
+        "status": ETLStatus.SUCCESS,
+        "rows_upsert_ops": rows_touched,
+        "files": len(paths),
+        "windows": len(windows),
+    }
+    logger.info("[etl_pipeline] COTAHIST historical load done: %s", summary)
     return summary
 
 

@@ -317,6 +317,41 @@ def test_run_etl_main_run_cotahist_annual_calls_pipeline(tmp_path):
     assert mock_cot.call_args[0][0] == txt
 
 
+def test_run_etl_main_two_cotahist_txts_use_historical_pipeline(tmp_path):
+    t2000 = tmp_path / "COTAHIST_A2000.TXT"
+    t2001 = tmp_path / "COTAHIST_A2001.TXT"
+    t2000.write_text("x", encoding="utf-8")
+    t2001.write_text("y", encoding="utf-8")
+    success = {"status": MagicMock(value="success"), "rows_upsert_ops": 1, "files": 2, "windows": 1}
+    with patch(
+        "app.etl.orchestration.pipeline.run_cotahist_historical_pipeline"
+    ) as mock_hist, patch("app.etl.orchestration.pipeline.run_cotahist_annual_pipeline") as mock_annual:
+        mock_hist.return_value = success
+        with patch("app.core.config.settings") as mock_settings:
+            mock_settings.b3_data_dir = str(tmp_path / "missing_b3_dir")
+            mock_settings.b3_cotahist_annual_dir = str(tmp_path)
+            # Newer year first on CLI; resolve sorts so pipeline sees ascending years.
+            with patch(
+                "sys.argv",
+                [
+                    "run_etl.py",
+                    "--run-cotahist-annual",
+                    "--cotahist-txt",
+                    str(t2001),
+                    "--cotahist-txt",
+                    str(t2000),
+                ],
+            ), patch("sys.exit"):
+                if "run_etl" in sys.modules:
+                    del sys.modules["run_etl"]
+                mod = _load_run_etl_module()
+                mod.main()
+    mock_hist.assert_called_once()
+    mock_annual.assert_not_called()
+    call_paths = mock_hist.call_args[0][0]
+    assert list(call_paths) == [t2000.resolve(), t2001.resolve()]
+
+
 def test_run_etl_main_default_runs_cotahist_when_txt_under_annual_root(tmp_path):
     instruments_csv = tmp_path / "instruments.csv"
     trades_csv = tmp_path / "trades.csv"
@@ -393,6 +428,24 @@ def test_resolve_cotahist_txt_files_year_range(tmp_path):
         settings_root="unused",
     )
     assert paths == [f.resolve()]
+
+
+def test_resolve_cotahist_txt_files_merged_sources_sorted_by_year_key(tmp_path):
+    mod = _load_run_etl_module()
+    t2000 = tmp_path / "COTAHIST_A2000.TXT"
+    t2001 = tmp_path / "COTAHIST_A2001.TXT"
+    t2000.write_text("", encoding="utf-8")
+    t2001.write_text("", encoding="utf-8")
+    paths = mod.resolve_cotahist_txt_files(
+        cotahist_txt=(t2001, t2000),
+        cotahist_year=None,
+        cotahist_from_year=None,
+        cotahist_to_year=None,
+        cotahist_dir=None,
+        cotahist_data_dir=None,
+        settings_root="unused",
+    )
+    assert paths == [t2000.resolve(), t2001.resolve()]
 
 
 def test_resolve_cotahist_txt_files_glob_sorted(tmp_path):
