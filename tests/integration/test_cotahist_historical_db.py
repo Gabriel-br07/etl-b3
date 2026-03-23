@@ -119,28 +119,17 @@ def test_historical_last_file_in_window_wins_source_file_name(tmp_path: Path) ->
 
     paths = _cotahist_txt_for_years(tmp_path, [2000, 2001])
 
-    # Ensure there are no pre-existing rows for these source files so we only
-    # assert against data ingested by this test run.
-    with managed_session() as db:
-        db.execute(
-            text(
-                "DELETE FROM fact_cotahist_daily "
-                "WHERE source_file_name IN (:f1, :f2)"
-            ),
-            {"f1": "COTAHIST_A2000.TXT", "f2": "COTAHIST_A2001.TXT"},
-        )
-
     run_cotahist_historical_pipeline(paths, record_audit=False)
 
     with managed_session() as db:
         src = db.execute(
             text(
                 "SELECT source_file_name FROM fact_cotahist_daily "
-                "WHERE source_file_name IN (:f1, :f2) "
-                "ORDER BY source_file_name DESC "
+                "WHERE trade_date = :trade_date AND codneg = :codneg "
+                "ORDER BY ingested_at DESC "
                 "LIMIT 1"
             ),
-            {"f1": "COTAHIST_A2000.TXT", "f2": "COTAHIST_A2001.TXT"},
+            {"trade_date": "2024-01-02", "codneg": "PETR4"},
         ).scalar_one()
 
     assert src == "COTAHIST_A2001.TXT"
