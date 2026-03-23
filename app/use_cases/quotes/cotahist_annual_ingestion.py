@@ -127,8 +127,16 @@ def ingest_cotahist_txt_file(
     return summary
 
 
-def parse_cotahist_txt_stats_only(txt_path: Path | str) -> CotahistIngestSummary:
-    """Parse and normalise without DB — fills validation counters only."""
+def parse_cotahist_txt_stats_only(
+    txt_path: Path | str,
+    *,
+    track_in_file_duplicates: bool = False,
+) -> CotahistIngestSummary:
+    """Parse and normalise without DB — fills validation counters only.
+
+    Duplicate-key counting is optional (default off) so large annual files do not
+    retain millions of keys in memory during Stage 1 validation.
+    """
     txt_path = Path(txt_path)
     summary = CotahistIngestSummary()
     last_pstats: CotahistParseStats | None = None
@@ -139,10 +147,11 @@ def parse_cotahist_txt_stats_only(txt_path: Path | str) -> CotahistIngestSummary
             summary.normalized_invalid += 1
         else:
             summary.normalized_valid += 1
-            key = natural_key_tuple(row)
-            if key in summary.seen_keys:
-                summary.in_file_duplicate_keys += 1
-            summary.seen_keys.add(key)
+            if track_in_file_duplicates:
+                key = natural_key_tuple(row)
+                if key in summary.seen_keys:
+                    summary.in_file_duplicate_keys += 1
+                summary.seen_keys.add(key)
     if last_pstats is not None:
         _sync_parser_counters(summary, last_pstats)
     else:

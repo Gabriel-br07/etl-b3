@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import time
 import zipfile
 from pathlib import Path
@@ -106,11 +107,13 @@ def download_cotahist_zip(
     for attempt in range(1, max_retries + 1):
         try:
             with httpx.Client(headers=headers, timeout=timeout, follow_redirects=True) as client:
-                resp = client.get(url)
-                if resp.status_code == 404:
-                    raise FileNotFoundError(f"COTAHIST ZIP not found (404): {url}")
-                resp.raise_for_status()
-                dest_zip.write_bytes(resp.content)
+                with client.stream("GET", url) as resp:
+                    if resp.status_code == 404:
+                        raise FileNotFoundError(f"COTAHIST ZIP not found (404): {url}")
+                    resp.raise_for_status()
+                    with open(dest_zip, "wb") as out:
+                        for chunk in resp.iter_bytes():
+                            out.write(chunk)
             logger.info(
                 "[cotahist] downloaded year=%s bytes=%s path=%s",
                 year,
@@ -123,6 +126,7 @@ def download_cotahist_zip(
             raise
         except Exception as exc:
             last_exc = exc
+            dest_zip.unlink(missing_ok=True)
             logger.warning(
                 "[cotahist] download attempt %s/%s failed year=%s url=%s err=%s",
                 attempt,
@@ -149,8 +153,8 @@ def extract_cotahist_txt(zip_path: Path, dest_dir: Path) -> Path:
     zip_path = Path(zip_path)
     with zipfile.ZipFile(zip_path, "r") as zf:
         member = _select_cotahist_archive_member(zf.namelist())
-        data = zf.read(member)
-    out = _canonical_extracted_txt_path(zip_path=zip_path, dest_dir=dest_dir, member=member)
-    out.write_bytes(data)
+        out = _canonical_extracted_txt_path(zip_path=zip_path, dest_dir=dest_dir, member=member)
+        with zf.open(member, "r") as src, open(out, "wb") as dst:
+            shutil.copyfileobj(src, dst)
     logger.info("[cotahist] extracted member=%s from %s -> %s", member, zip_path.name, out)
     return out
