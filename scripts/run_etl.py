@@ -320,8 +320,9 @@ def main() -> None:
         type=Path,
         default=None,
         help=(
-            "Root for year-based paths (default: B3_COTAHIST_ANNUAL_DIR). "
-            "Overrides settings for --cotahist-year / --cotahist-from-year only."
+            "Root directory for annual COTAHIST data (default: B3_COTAHIST_ANNUAL_DIR). "
+            "Used for year-based paths (--cotahist-year / --cotahist-from-year / --cotahist-to-year) "
+            "and as the default scan root when no explicit --cotahist-* inputs are provided."
         ),
     )
 
