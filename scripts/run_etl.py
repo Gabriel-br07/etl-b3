@@ -859,6 +859,30 @@ def main() -> None:
 
     # Final summary and exit
     summary["success"] = overall_success
+
+    cotahist_hist = summary["pipelines"].get("cotahist_historical")
+    if cotahist_hist:
+        hist_result = cotahist_hist[0]["result"]
+        if is_success(hist_result):
+            logger.info(
+                "ETL certification: COTAHIST historical load succeeded",
+                extra={
+                    "pipeline": "cotahist_historical",
+                    "rows_upsert_ops": hist_result.get("rows_upsert_ops"),
+                    "files": hist_result.get("files"),
+                    "windows": hist_result.get("windows"),
+                },
+            )
+        else:
+            logger.error(
+                "ETL certification: COTAHIST historical load failed",
+                extra={
+                    "pipeline": "cotahist_historical",
+                    "status": hist_result.get("status"),
+                    "error": hist_result.get("error"),
+                },
+            )
+
     logger.info("ETL summary", extra={"summary": summary})
     print(json.dumps(summary, default=str))
 
