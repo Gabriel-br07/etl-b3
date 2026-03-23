@@ -15,7 +15,13 @@ run_daily_quotes_pipeline(quotes_csv, target_date)
 run_intraday_quotes_pipeline(jsonl_path)
     Loads fact_quotes hypertable from a JSONL file.
 
-All functions record ETL run audit rows in etl_runs.
+run_cotahist_annual_pipeline(txt_path)
+    Loads fact_cotahist_daily from a COTAHIST_A*.TXT fixed-width file.
+
+By default each function records ``etl_runs`` audit rows. ``scripts/run_etl.py``
+uses ``record_audit=True`` for every step so CLI runs are auditable. Pass
+``record_audit=False`` only for ad-hoc callers that intentionally skip ``etl_runs``
+(e.g. tests or custom batch tools).
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from app.etl.transforms.b3_transforms import (
     transform_trades,
 )
 from app.repositories.etl_run_repository import ETLRunRepository
+from app.use_cases.quotes.cotahist_annual_ingestion import ingest_cotahist_txt_file
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +52,8 @@ def run_instruments_and_trades_pipeline(
     instruments_csv: Path,
     trades_file: Path | None,
     target_date: date,
+    *,
+    record_audit: bool = True,
 ) -> dict:
     """Parse normalized instruments + trades CSVs and load into the database.
 
@@ -53,6 +62,7 @@ def run_instruments_and_trades_pipeline(
         trades_file:     Path to the normalized trades file (CSV or ZIP).
                          Pass None to skip trade loading.
         target_date:     Reference date for the data (used in audit row).
+        record_audit:    When False, skip all ``etl_runs`` writes (CLI batch mode).
 
     Returns:
         Summary dict with keys: target_date, assets_upserted, trades_upserted, status.
@@ -62,18 +72,17 @@ def run_instruments_and_trades_pipeline(
         target_date, instruments_csv, trades_file,
     )
 
-    # Transaction 1: start ETL run audit and store run_id (so we don't pass
-    # ORM instances between sessions)
-    with managed_session() as audit_db:
-        etl_repo = ETLRunRepository(audit_db)
-        run = etl_repo.start_run(
-            "instruments_and_trades",
-            source_file=str(instruments_csv),
-            source_date=target_date,
-        )
-        # Ensure the ETLRun row is flushed so that run.id is populated
-        audit_db.flush()
-        run_id = run.id
+    run_id: int | None = None
+    if record_audit:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run = etl_repo.start_run(
+                "instruments_and_trades",
+                source_file=str(instruments_csv),
+                source_date=target_date,
+            )
+            audit_db.flush()
+            run_id = run.id
 
     assets_upserted = 0
     trades_upserted = 0
@@ -141,28 +150,28 @@ def run_instruments_and_trades_pipeline(
         # The data transaction was rolled back by managed_session(); now
         # record the FAILED audit in its own transaction.
         logger.exception("[etl_pipeline] instruments+trades load FAILED: %s", exc)
-        try:
-            with managed_session() as audit_db:
-                etl_repo = ETLRunRepository(audit_db)
-                run_obj = etl_repo.get_by_id(run_id)
-                if run_obj is None:
-                    logger.warning(
-                        "[etl_pipeline] could not reload ETL run id=%s to record failure",
-                        run_id,
-                    )
-                else:
-                    etl_repo.finish_run(
-                        run_obj,
-                        ETLStatus.FAILED,
-                        message=str(exc),
-                        rows_inserted=assets_upserted + trades_upserted,
-                        rows_failed=1,
-                    )
-        except Exception:
-            # Avoid masking the original ETL failure if audit logging fails.
-            logger.exception(
-                "[etl_pipeline] instruments+trades load FAILED but could not record audit run"
-            )
+        if record_audit and run_id is not None:
+            try:
+                with managed_session() as audit_db:
+                    etl_repo = ETLRunRepository(audit_db)
+                    run_obj = etl_repo.get_by_id(run_id)
+                    if run_obj is None:
+                        logger.warning(
+                            "[etl_pipeline] could not reload ETL run id=%s to record failure",
+                            run_id,
+                        )
+                    else:
+                        etl_repo.finish_run(
+                            run_obj,
+                            ETLStatus.FAILED,
+                            message=str(exc),
+                            rows_inserted=assets_upserted + trades_upserted,
+                            rows_failed=1,
+                        )
+            except Exception:
+                logger.exception(
+                    "[etl_pipeline] instruments+trades load FAILED but could not record audit run"
+                )
 
         return {
             "target_date": str(target_date),
@@ -172,23 +181,23 @@ def run_instruments_and_trades_pipeline(
             "error": str(exc),
         }
 
-    # Transaction 3: data load committed successfully; record SUCCESS in a
-    # separate transaction.
-    with managed_session() as audit_db:
-        etl_repo = ETLRunRepository(audit_db)
-        run_obj = etl_repo.get_by_id(run_id)
-        if run_obj is None:
-            logger.warning(
-                "[etl_pipeline] could not reload ETL run id=%s to record success",
-                run_id,
-            )
-        else:
-            etl_repo.finish_run(
-                run_obj,
-                ETLStatus.SUCCESS,
-                rows_inserted=assets_upserted + trades_upserted,
-                rows_failed=0,
-            )
+    if record_audit and run_id is not None:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run_obj = etl_repo.get_by_id(run_id)
+            if run_obj is None:
+                logger.warning(
+                    "[etl_pipeline] could not reload ETL run id=%s to record success",
+                    run_id,
+                )
+            else:
+                etl_repo.finish_run(
+                    run_obj,
+                    ETLStatus.SUCCESS,
+                    message=None,
+                    rows_inserted=assets_upserted + trades_upserted,
+                    rows_failed=0,
+                )
 
     summary = {
         "target_date": str(target_date),
@@ -203,6 +212,8 @@ def run_instruments_and_trades_pipeline(
 def run_daily_quotes_pipeline(
     quotes_csv: Path,
     target_date: date,
+    *,
+    record_audit: bool = True,
 ) -> dict:
     """Parse a normalized negocios_consolidados CSV and load into fact_daily_quotes.
 
@@ -220,6 +231,7 @@ def run_daily_quotes_pipeline(
         quotes_csv:  Path to the normalized quotes CSV file.
         target_date: Reference date used as trade_date fallback and in the
                      audit row.
+        record_audit: When False, skip all ``etl_runs`` writes.
 
     Returns:
         Summary dict with keys: target_date, quotes_upserted, status.
@@ -230,15 +242,17 @@ def run_daily_quotes_pipeline(
         quotes_csv,
     )
 
-    with managed_session() as audit_db:
-        etl_repo = ETLRunRepository(audit_db)
-        run = etl_repo.start_run(
-            "daily_quotes",
-            source_file=str(quotes_csv),
-            source_date=target_date,
-        )
-        audit_db.flush()
-        run_id = run.id
+    run_id: int | None = None
+    if record_audit:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run = etl_repo.start_run(
+                "daily_quotes",
+                source_file=str(quotes_csv),
+                source_date=target_date,
+            )
+            audit_db.flush()
+            run_id = run.id
 
     quotes_upserted = 0
 
@@ -269,27 +283,28 @@ def run_daily_quotes_pipeline(
 
     except Exception as exc:
         logger.exception("[etl_pipeline] daily quotes load FAILED: %s", exc)
-        try:
-            with managed_session() as audit_db:
-                etl_repo = ETLRunRepository(audit_db)
-                run_obj = etl_repo.get_by_id(run_id)
-                if run_obj is None:
-                    logger.warning(
-                        "[etl_pipeline] could not reload ETL run id=%s to record failure",
-                        run_id,
-                    )
-                else:
-                    etl_repo.finish_run(
-                        run_obj,
-                        ETLStatus.FAILED,
-                        message=str(exc),
-                        rows_inserted=quotes_upserted,
-                        rows_failed=1,
-                    )
-        except Exception:
-            logger.exception(
-                "[etl_pipeline] daily quotes load FAILED but could not record audit run"
-            )
+        if record_audit and run_id is not None:
+            try:
+                with managed_session() as audit_db:
+                    etl_repo = ETLRunRepository(audit_db)
+                    run_obj = etl_repo.get_by_id(run_id)
+                    if run_obj is None:
+                        logger.warning(
+                            "[etl_pipeline] could not reload ETL run id=%s to record failure",
+                            run_id,
+                        )
+                    else:
+                        etl_repo.finish_run(
+                            run_obj,
+                            ETLStatus.FAILED,
+                            message=str(exc),
+                            rows_inserted=quotes_upserted,
+                            rows_failed=1,
+                        )
+            except Exception:
+                logger.exception(
+                    "[etl_pipeline] daily quotes load FAILED but could not record audit run"
+                )
 
         return {
             "target_date": str(target_date),
@@ -298,21 +313,23 @@ def run_daily_quotes_pipeline(
             "error": str(exc),
         }
 
-    with managed_session() as audit_db:
-        etl_repo = ETLRunRepository(audit_db)
-        run_obj = etl_repo.get_by_id(run_id)
-        if run_obj is None:
-            logger.warning(
-                "[etl_pipeline] could not reload ETL run id=%s to record success",
-                run_id,
-            )
-        else:
-            etl_repo.finish_run(
-                run_obj,
-                ETLStatus.SUCCESS,
-                rows_inserted=quotes_upserted,
-                rows_failed=0,
-            )
+    if record_audit and run_id is not None:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run_obj = etl_repo.get_by_id(run_id)
+            if run_obj is None:
+                logger.warning(
+                    "[etl_pipeline] could not reload ETL run id=%s to record success",
+                    run_id,
+                )
+            else:
+                etl_repo.finish_run(
+                    run_obj,
+                    ETLStatus.SUCCESS,
+                    message=None,
+                    rows_inserted=quotes_upserted,
+                    rows_failed=0,
+                )
 
     summary = {
         "target_date": str(target_date),
@@ -323,29 +340,28 @@ def run_daily_quotes_pipeline(
     return summary
 
 
-def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
+def run_intraday_quotes_pipeline(jsonl_path: Path, *, record_audit: bool = True) -> dict:
     """Parse a DailyFluctuationHistory JSONL and load into the fact_quotes hypertable.
 
     Args:
         jsonl_path: Path to the JSONL output file from run_b3_quote_batch.py.
+        record_audit: When False, skip all ``etl_runs`` writes.
 
     Returns:
         Summary dict with keys: source_file, rows_inserted, status.
     """
     logger.info("[etl_pipeline] starting intraday quotes load  jsonl=%s", jsonl_path)
 
-    # Start the ETL run audit in its own transaction so it is not rolled back
-    # together with the data load if the ETL fails. Store only the run id so
-    # we don't pass a detached ORM instance between sessions.
-    with managed_session() as audit_db:
-        etl_repo = ETLRunRepository(audit_db)
-        run = etl_repo.start_run(
-            "intraday_quotes",
-            source_file=str(jsonl_path),
-        )
-        # Ensure the ETLRun is flushed so the primary key is assigned
-        audit_db.flush()
-        run_id = run.id
+    run_id: int | None = None
+    if record_audit:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run = etl_repo.start_run(
+                "intraday_quotes",
+                source_file=str(jsonl_path),
+            )
+            audit_db.flush()
+            run_id = run.id
 
     rows_inserted = 0
 
@@ -384,31 +400,28 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
     except Exception as exc:
         logger.exception("[etl_pipeline] intraday quotes load FAILED: %s", exc)
 
-        # Record the FAILED status in a separate transaction so the audit row
-        # is persisted even though the data transaction was rolled back.
-        try:
-            with managed_session() as audit_db:
-                etl_repo = ETLRunRepository(audit_db)
-                # Reload the run ORM instance from the new session by id
-                run_obj = etl_repo.get_by_id(run_id)
-                if run_obj is None:
-                    logger.warning(
-                        "[etl_pipeline] could not reload ETL run id=%s to record failure",
-                        run_id,
-                    )
-                else:
-                    etl_repo.finish_run(
-                        run_obj,
-                        ETLStatus.FAILED,
-                        message=str(exc),
-                        rows_inserted=rows_inserted,
-                        rows_failed=1,
-                    )
-        except Exception:
-            # Avoid masking the original ETL failure if audit logging fails.
-            logger.exception(
-                "[etl_pipeline] intraday quotes load FAILED but could not record audit run"
-            )
+        if record_audit and run_id is not None:
+            try:
+                with managed_session() as audit_db:
+                    etl_repo = ETLRunRepository(audit_db)
+                    run_obj = etl_repo.get_by_id(run_id)
+                    if run_obj is None:
+                        logger.warning(
+                            "[etl_pipeline] could not reload ETL run id=%s to record failure",
+                            run_id,
+                        )
+                    else:
+                        etl_repo.finish_run(
+                            run_obj,
+                            ETLStatus.FAILED,
+                            message=str(exc),
+                            rows_inserted=rows_inserted,
+                            rows_failed=1,
+                        )
+            except Exception:
+                logger.exception(
+                    "[etl_pipeline] intraday quotes load FAILED but could not record audit run"
+                )
 
         return {
             "source_file": jsonl_path.name,
@@ -417,23 +430,23 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
             "error": str(exc),
         }
 
-    # If we reach here, the data load transaction committed successfully.
-    with managed_session() as audit_db:
-        etl_repo = ETLRunRepository(audit_db)
-        # Reload the run ORM instance by id before finishing
-        run_obj = etl_repo.get_by_id(run_id)
-        if run_obj is None:
-            logger.warning(
-                "[etl_pipeline] could not reload ETL run id=%s to record success",
-                run_id,
-            )
-        else:
-            etl_repo.finish_run(
-                run_obj,
-                ETLStatus.SUCCESS,
-                rows_inserted=rows_inserted,
-                rows_failed=0,
-            )
+    if record_audit and run_id is not None:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run_obj = etl_repo.get_by_id(run_id)
+            if run_obj is None:
+                logger.warning(
+                    "[etl_pipeline] could not reload ETL run id=%s to record success",
+                    run_id,
+                )
+            else:
+                etl_repo.finish_run(
+                    run_obj,
+                    ETLStatus.SUCCESS,
+                    message=None,
+                    rows_inserted=rows_inserted,
+                    rows_failed=0,
+                )
 
     summary = {
         "source_file": jsonl_path.name,
@@ -441,4 +454,112 @@ def run_intraday_quotes_pipeline(jsonl_path: Path) -> dict:
         "status": ETLStatus.SUCCESS,
     }
     logger.info("[etl_pipeline] intraday quotes load done: %s", summary)
+    return summary
+
+
+def run_cotahist_annual_pipeline(
+    txt_path: Path,
+    *,
+    record_audit: bool = True,
+    track_in_file_duplicates: bool = False,
+) -> dict:
+    """Parse a COTAHIST annual TXT and upsert into ``fact_cotahist_daily``.
+
+    Success leaves ``etl_runs.message`` NULL (stats go to logs only). Failures
+    persist ``str(exc)`` in ``message``. Use ``record_audit=False`` only to skip
+    one ``etl_runs`` row per file (e.g. very large unattended backfills); the
+    ``run_etl.py`` CLI keeps audit enabled.
+    """
+    logger.info("[etl_pipeline] starting COTAHIST annual load  txt=%s", txt_path)
+
+    run_id: int | None = None
+    if record_audit:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run = etl_repo.start_run(
+                "cotahist_annual",
+                source_file=str(txt_path),
+            )
+            audit_db.flush()
+            run_id = run.id
+
+    rows_touched = 0
+    ingest_summary = None
+
+    try:
+        with managed_session() as db:
+            ingest_summary = ingest_cotahist_txt_file(
+                db,
+                txt_path,
+                track_in_file_duplicates=track_in_file_duplicates,
+            )
+            rows_touched = ingest_summary.db_upsert_operations
+    except Exception as exc:
+        logger.exception("[etl_pipeline] COTAHIST annual load FAILED: %s", exc)
+        if record_audit and run_id is not None:
+            try:
+                with managed_session() as audit_db:
+                    etl_repo = ETLRunRepository(audit_db)
+                    run_obj = etl_repo.get_by_id(run_id)
+                    if run_obj is None:
+                        logger.warning(
+                            "[etl_pipeline] could not reload ETL run id=%s to record failure",
+                            run_id,
+                        )
+                    else:
+                        etl_repo.finish_run(
+                            run_obj,
+                            ETLStatus.FAILED,
+                            message=str(exc),
+                            rows_inserted=rows_touched,
+                            rows_failed=1,
+                        )
+            except Exception:
+                logger.exception(
+                    "[etl_pipeline] COTAHIST annual FAILED but could not record audit run"
+                )
+        return {
+            "source_file": txt_path.name,
+            "status": ETLStatus.FAILED,
+            "error": str(exc),
+            "rows_upsert_ops": rows_touched,
+        }
+
+    if ingest_summary:
+        logger.info(
+            "[etl_pipeline] COTAHIST stats file=%s valid=%s invalid=%s dup_keys=%s rows_upsert_ops=%s",
+            txt_path.name,
+            ingest_summary.normalized_valid,
+            ingest_summary.normalized_invalid,
+            ingest_summary.in_file_duplicate_keys,
+            rows_touched,
+        )
+
+    if record_audit and run_id is not None:
+        with managed_session() as audit_db:
+            etl_repo = ETLRunRepository(audit_db)
+            run_obj = etl_repo.get_by_id(run_id)
+            if run_obj is None:
+                logger.warning(
+                    "[etl_pipeline] could not reload ETL run id=%s to record success",
+                    run_id,
+                )
+            else:
+                etl_repo.finish_run(
+                    run_obj,
+                    ETLStatus.SUCCESS,
+                    message=None,
+                    rows_inserted=rows_touched,
+                    rows_failed=0,
+                )
+
+    summary = {
+        "source_file": txt_path.name,
+        "status": ETLStatus.SUCCESS,
+        "rows_upsert_ops": rows_touched,
+        "normalized_valid": ingest_summary.normalized_valid if ingest_summary else 0,
+        "normalized_invalid": ingest_summary.normalized_invalid if ingest_summary else 0,
+        "in_file_duplicate_keys": ingest_summary.in_file_duplicate_keys if ingest_summary else 0,
+    }
+    logger.info("[etl_pipeline] COTAHIST annual load done: %s", summary)
     return summary

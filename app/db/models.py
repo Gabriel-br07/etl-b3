@@ -6,6 +6,7 @@ dim_assets          – instrument master data (one row per ticker)
 fact_daily_trades   – consolidated trading data by asset/date (negocios consolidados)
 fact_daily_quotes   – daily consolidated quotes (legacy name kept for compatibility)
 fact_quotes         – intraday time-series quotes; converted to TimescaleDB hypertable
+fact_cotahist_daily – annual COTAHIST type-01 rows (full B3 grain; separate from fact_daily_quotes)
 etl_runs            – ETL observability / audit log
 """
 
@@ -186,13 +187,85 @@ class FactQuote(Base):
     )
 
 
+class FactCotahistDaily(Base):
+    """Historical annual COTAHIST (type 01) — one row per B3 natural key.
+
+    **Coexistence:** This table is independent from ``fact_daily_quotes`` (negocios
+    CSV, one row per ticker/date) and ``fact_quotes`` (intraday JSONL). COTAHIST
+    is authoritative for its own composite key; nothing here is auto-synced into
+    the daily quote tables. Re-ingesting the same natural key overwrites mutable
+    fields and refreshes ``ingested_at`` / ``source_file_name`` (last successful
+    load wins on ``uq_cotahist_natural_key``).
+    """
+
+    __tablename__ = "fact_cotahist_daily"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    codneg: Mapped[str] = mapped_column(String(12), nullable=False)
+    cod_bdi: Mapped[str] = mapped_column(String(2), nullable=False)
+    tp_merc: Mapped[str] = mapped_column(String(3), nullable=False)
+    nomres: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    especi: Mapped[str] = mapped_column(String(10), nullable=False)
+    prazo_term_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    moeda_ref: Mapped[str] = mapped_column(String(4), nullable=False)
+    open_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    max_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    min_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    avg_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    last_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    best_bid: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    best_ask: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    trade_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    quantity_total: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    volume_financial: Mapped[Decimal | None] = mapped_column(Numeric(24, 4), nullable=True)
+    strike_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    ind_opc: Mapped[str] = mapped_column(String(1), nullable=False)
+    expiration_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    expiration_key: Mapped[str] = mapped_column(String(8), nullable=False)
+    quotation_factor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    strike_points: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    isin: Mapped[str] = mapped_column(String(12), nullable=False)
+    distribution_num: Mapped[str] = mapped_column(String(3), nullable=False)
+    source_file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "trade_date",
+            "codneg",
+            "cod_bdi",
+            "tp_merc",
+            "especi",
+            "prazo_term_days",
+            "moeda_ref",
+            "expiration_key",
+            "isin",
+            "distribution_num",
+            "ind_opc",
+            name="uq_cotahist_natural_key",
+        ),
+        Index("ix_fact_cotahist_trade_date", "trade_date"),
+        Index("ix_fact_cotahist_codneg", "codneg"),
+        Index("ix_fact_cotahist_ticker_date", "ticker", "trade_date"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Observability / audit
 # ---------------------------------------------------------------------------
 
 
 class ETLRun(Base):
-    """Audit log for ETL flow executions."""
+    """Audit log for ETL flow executions.
+
+    Convention for ``message``: leave **NULL** on successful completion (same as
+    omitting the argument to ``finish_run``). Persist **error text only** on
+    ``FAILED`` — e.g. DB exceptions with HINT — not success counters or stats.
+    """
 
     __tablename__ = "etl_runs"
 

@@ -1,6 +1,10 @@
 """Application configuration and settings."""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Shared default for ``b3_cotahist_annual_dir`` (empty env must not resolve to CWD).
+B3_COTAHIST_ANNUAL_DIR_DEFAULT: str = "data/raw/b3/cotahist_annual"
 
 
 class Settings(BaseSettings):
@@ -48,7 +52,7 @@ class Settings(BaseSettings):
 
     # Playwright explicit pauses (ms)
     # Pause right after opening the entrypoint page to allow dynamic content to render
-    playwright_pause_after_open_ms: int = 2000
+    playwright_pause_after_open_ms: int = 3000
     # Pause specifically before clicking the 'Renda variável' tab
     playwright_pause_before_renda_variavel_ms: int = 1500
     # Small pause between interactive actions (clicks/selects)
@@ -81,12 +85,47 @@ class Settings(BaseSettings):
     #: Maximum number of retry attempts for quote requests.
     #: Env var: B3_QUOTE_MAX_RETRIES
     b3_quote_max_retries: int = 3
+
+    # ---------------------------------------------------------------------------
+    # B3 annual COTAHIST (SerHist ZIP / fixed-width TXT)
+    # ---------------------------------------------------------------------------
+
+    #: Base URL for annual files, e.g. {base}/COTAHIST_A1986.zip
+    b3_cotahist_base_url: str = "https://bvmf.bmfbovespa.com.br/InstDados/SerHist"
+
+    #: HTTP timeout (seconds) for COTAHIST downloads.
+    b3_cotahist_timeout: float = 120.0
+
+    #: Max retries per year (exponential backoff between attempts).
+    b3_cotahist_max_retries: int = 4
+
+    #: Optional pause (seconds) between successful year downloads.
+    b3_cotahist_delay_between_years: float = 0.0
+
+    #: Default inclusive year range for bulk download (overridable via CLI).
+    b3_cotahist_year_start: int = 1986
+    b3_cotahist_year_end: int = 2026
+
+    #: Root for annual COTAHIST on disk: ``{this}/{year}/COTAHIST_A{year}.zip|.TXT``.
+    #: Env var: B3_COTAHIST_ANNUAL_DIR
+    b3_cotahist_annual_dir: str = B3_COTAHIST_ANNUAL_DIR_DEFAULT
+
     # Logging
     log_level: str = "INFO"
 
     # API metadata
     api_title: str = "ETL B3 API"
     api_version: str = "0.1.0"
+
+    @field_validator("b3_cotahist_annual_dir", mode="before")
+    @classmethod
+    def _normalize_b3_cotahist_annual_dir(cls, v: object) -> str:
+        if v is None:
+            return B3_COTAHIST_ANNUAL_DIR_DEFAULT
+        s = str(v).strip()
+        if not s:
+            return B3_COTAHIST_ANNUAL_DIR_DEFAULT
+        return s
 
 
 settings = Settings()
