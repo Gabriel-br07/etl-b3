@@ -40,7 +40,7 @@ def test_historical_pipeline_success_single_audit_and_finish_with_null_message()
 
     def fake_ingest(db, txt_path, **kwargs):
         ingest_calls.append(Path(txt_path))
-        assert kwargs.get("batch_size") == 20_000
+        assert kwargs.get("batch_size") == 50_000
         assert kwargs.get("progress_heartbeat") is False
         return CotahistIngestSummary(db_upsert_operations=3)
 

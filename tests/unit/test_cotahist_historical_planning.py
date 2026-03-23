@@ -16,8 +16,8 @@ from app.etl.orchestration.cotahist_historical_planning import (
 )
 
 
-def test_ingest_batch_size_is_twenty_thousand() -> None:
-    assert COTAHIST_HISTORICAL_INGEST_BATCH_SIZE == 20_000
+def test_ingest_batch_size_is_fifty_thousand() -> None:
+    assert COTAHIST_HISTORICAL_INGEST_BATCH_SIZE == 50_000
 
 
 @pytest.mark.parametrize(
@@ -25,13 +25,13 @@ def test_ingest_batch_size_is_twenty_thousand() -> None:
     [
         (0, []),
         (1, [1]),
-        (20_000, [20_000]),
-        (20_001, [20_000, 1]),
-        (40_000, [20_000, 20_000]),
-        (40_001, [20_000, 20_000, 1]),
+        (50_000, [50_000]),
+        (50_001, [50_000, 1]),
+        (100_000, [50_000, 50_000]),
+        (100_001, [50_000, 50_000, 1]),
     ],
 )
-def test_iter_batches_splits_at_twenty_thousand(length: int, expected_lens: list[int]) -> None:
+def test_iter_batches_splits_at_historical_batch_size(length: int, expected_lens: list[int]) -> None:
     items = list(range(length))
     batches = list(iter_batches(items, COTAHIST_HISTORICAL_INGEST_BATCH_SIZE))
     assert [len(b) for b in batches] == expected_lens
