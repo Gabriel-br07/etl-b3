@@ -9,7 +9,7 @@ from typing import TypeVar
 
 T = TypeVar("T")
 
-COTAHIST_HISTORICAL_INGEST_BATCH_SIZE = 20_000
+COTAHIST_HISTORICAL_INGEST_BATCH_SIZE = 50_000
 
 _COTAHIST_TXT_YEAR = re.compile(r"COTAHIST_A(\d{4})\.TXT$", re.I)
 

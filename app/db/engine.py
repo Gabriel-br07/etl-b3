@@ -40,7 +40,8 @@ engine = create_engine(
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_max_overflow,
     pool_recycle=settings.db_pool_recycle,
-    echo=(settings.app_env == "development"),
+    echo=False,
+    #echo=(settings.app_env == "development"), # Disable SQL logging in production
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
