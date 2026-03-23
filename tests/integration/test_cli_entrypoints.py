@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.core.config import B3_COTAHIST_ANNUAL_DIR_DEFAULT
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 
 
@@ -410,3 +412,25 @@ def test_resolve_cotahist_txt_files_glob_sorted(tmp_path):
         settings_root="unused",
     )
     assert paths == [f1986.resolve(), f1990.resolve()]
+
+
+def test_resolve_cotahist_txt_files_skips_glob_when_not_directory(tmp_path):
+    mod = _load_run_etl_module()
+    not_a_dir = tmp_path / "not_a_dir.txt"
+    not_a_dir.write_text("x", encoding="utf-8")
+    paths = mod.resolve_cotahist_txt_files(
+        cotahist_txt=(),
+        cotahist_year=None,
+        cotahist_from_year=None,
+        cotahist_to_year=None,
+        cotahist_dir=not_a_dir,
+        cotahist_data_dir=None,
+        settings_root="unused",
+    )
+    assert paths == []
+
+
+def test_normalized_cotahist_settings_root_empty_uses_default():
+    mod = _load_run_etl_module()
+    assert mod._normalized_cotahist_settings_root("") == B3_COTAHIST_ANNUAL_DIR_DEFAULT
+    assert mod._normalized_cotahist_settings_root("   ") == B3_COTAHIST_ANNUAL_DIR_DEFAULT
