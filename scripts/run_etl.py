@@ -638,9 +638,9 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Execute pipelines in the required order, using lazy imports
     #
-    # record_audit=False: load data only; no etl_runs rows per step/file.
-    # Success/failure detail is in stdout JSON and logs. API/scheduler keep
-    # record_audit=True when calling pipelines directly.
+    # Each step uses record_audit=True so ``etl_runs`` captures RUNNING/SUCCESS/FAILED
+    # (source file, row counts, errors). The final stdout JSON and logs remain the
+    # CLI batch summary on top of that.
     # ------------------------------------------------------------------
     overall_success = True
 
@@ -655,7 +655,7 @@ def main() -> None:
                 logger.info("Starting instruments+trades pipeline", extra={"pipeline": "instruments_and_trades", "source_file": str(instruments_csv), "trades_file": str(trades_file) if trades_file else None, "date": str(target_date)})
                 start = time.perf_counter()
                 result = run_instruments_and_trades_pipeline(
-                    instruments_csv, trades_file, target_date, record_audit=False
+                    instruments_csv, trades_file, target_date, record_audit=True
                 )
                 duration = time.perf_counter() - start
 
@@ -689,7 +689,7 @@ def main() -> None:
                     logger.info("Starting trades-only pipeline (via instruments_and_trades entry)", extra={"pipeline": "trades", "trades_file": str(trades_file), "date": str(target_date)})
                     start = time.perf_counter()
                     result = run_instruments_and_trades_pipeline(
-                        instruments_csv, trades_file, target_date, record_audit=False
+                        instruments_csv, trades_file, target_date, record_audit=True
                     )
                     duration = time.perf_counter() - start
 
@@ -717,7 +717,7 @@ def main() -> None:
                 logger.info("Starting daily quotes pipeline", extra={"pipeline": "daily_quotes", "source_file": str(daily_quotes_file), "date": str(target_date)})
                 start = time.perf_counter()
                 result = run_daily_quotes_pipeline(
-                    daily_quotes_file, target_date, record_audit=False
+                    daily_quotes_file, target_date, record_audit=True
                 )
                 duration = time.perf_counter() - start
 
@@ -744,7 +744,7 @@ def main() -> None:
 
                 logger.info("Starting intraday quotes pipeline", extra={"pipeline": "intraday_quotes", "source_file": str(jsonl_file)})
                 start = time.perf_counter()
-                result = run_intraday_quotes_pipeline(jsonl_file, record_audit=False)
+                result = run_intraday_quotes_pipeline(jsonl_file, record_audit=True)
                 duration = time.perf_counter() - start
 
                 summary["pipelines"]["intraday_quotes"] = result
@@ -777,7 +777,7 @@ def main() -> None:
                     start = time.perf_counter()
                     result = run_cotahist_annual_pipeline(
                         txt_path,
-                        record_audit=False,
+                        record_audit=True,
                         track_in_file_duplicates=False,
                     )
                     duration = time.perf_counter() - start
@@ -809,7 +809,6 @@ def main() -> None:
     # Final summary and exit
     summary["success"] = overall_success
     logger.info("ETL summary", extra={"summary": summary})
-    # Improvement 7: JSON summary output for easy parsing by external systems
     print(json.dumps(summary, default=str))
 
     if overall_success:

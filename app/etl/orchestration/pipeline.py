@@ -18,9 +18,10 @@ run_intraday_quotes_pipeline(jsonl_path)
 run_cotahist_annual_pipeline(txt_path)
     Loads fact_cotahist_daily from a COTAHIST_A*.TXT fixed-width file.
 
-By default each function records ``etl_runs`` audit rows. Pass ``record_audit=False``
-from the CLI orchestrator (``scripts/run_etl.py``) to load data only and avoid
-per-step / per-file audit noise. API and scheduler callers keep the default.
+By default each function records ``etl_runs`` audit rows. ``scripts/run_etl.py``
+uses ``record_audit=True`` for every step so CLI runs are auditable. Pass
+``record_audit=False`` only for ad-hoc callers that intentionally skip ``etl_runs``
+(e.g. tests or custom batch tools).
 """
 
 from __future__ import annotations
@@ -465,8 +466,9 @@ def run_cotahist_annual_pipeline(
     """Parse a COTAHIST annual TXT and upsert into ``fact_cotahist_daily``.
 
     Success leaves ``etl_runs.message`` NULL (stats go to logs only). Failures
-    persist ``str(exc)`` in ``message``. Set ``record_audit=False`` from the CLI
-    orchestrator when loading many years to avoid one audit row per file.
+    persist ``str(exc)`` in ``message``. Use ``record_audit=False`` only to skip
+    one ``etl_runs`` row per file (e.g. very large unattended backfills); the
+    ``run_etl.py`` CLI keeps audit enabled.
     """
     logger.info("[etl_pipeline] starting COTAHIST annual load  txt=%s", txt_path)
 
