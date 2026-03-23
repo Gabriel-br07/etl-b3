@@ -179,7 +179,12 @@ def resolve_cotahist_txt_files(
     cotahist_data_dir: Path | None,
     settings_root: str,
 ) -> list[Path]:
-    """Resolve one or more COTAHIST TXT paths from CLI arguments."""
+    """Resolve one or more COTAHIST TXT paths from CLI arguments.
+
+    The returned list is de-duplicated then sorted with ``cotahist_txt_glob_sort_key``
+    (same key as the ``cotahist_dir`` glob) so order does not depend on which flags
+    appeared first on the CLI.
+    """
     root = (
         Path(cotahist_data_dir)
         if cotahist_data_dir is not None
@@ -218,7 +223,7 @@ def resolve_cotahist_txt_files(
         if p not in seen:
             seen.add(p)
             unique.append(p)
-    return unique
+    return sorted(unique, key=cotahist_txt_glob_sort_key)
 
 
 def main() -> None:
@@ -764,8 +769,8 @@ def main() -> None:
                     run_cotahist_historical_pipeline,
                 )
 
-                results: list[dict] = []
                 if len(cotahist_files) > 1:
+                    results_hist: list[dict] = []
                     logger.info(
                         "Starting COTAHIST historical pipeline (multi-file)",
                         extra={
@@ -780,7 +785,7 @@ def main() -> None:
                         track_in_file_duplicates=False,
                     )
                     duration = time.perf_counter() - start
-                    results.append(
+                    results_hist.append(
                         {
                             "historical_batch": True,
                             "files": [str(p) for p in cotahist_files],
@@ -804,7 +809,9 @@ def main() -> None:
                             "COTAHIST historical pipeline completed",
                             extra={"pipeline": "cotahist_historical", "duration": duration},
                         )
+                    summary["pipelines"]["cotahist_historical"] = results_hist
                 else:
+                    results_annual: list[dict] = []
                     for txt_path in cotahist_files:
                         logger.info(
                             "Starting COTAHIST annual pipeline",
@@ -817,7 +824,7 @@ def main() -> None:
                             track_in_file_duplicates=False,
                         )
                         duration = time.perf_counter() - start
-                        results.append({"file": str(txt_path), "result": result, "duration": duration})
+                        results_annual.append({"file": str(txt_path), "result": result, "duration": duration})
                         if not is_success(result):
                             logger.error(
                                 "COTAHIST annual pipeline non-success",
@@ -840,9 +847,13 @@ def main() -> None:
                                 },
                             )
 
-                summary["pipelines"]["cotahist_annual"] = results
+                    summary["pipelines"]["cotahist_annual"] = results_annual
             except Exception as exc:
-                logger.exception("COTAHIST annual pipeline raised an exception: %s", exc, extra={"pipeline": "cotahist_annual"})
+                logger.exception(
+                    "COTAHIST load step raised an exception: %s",
+                    exc,
+                    extra={"pipeline": "cotahist_load"},
+                )
                 overall_success = False
                 summary["success"] = False
 
