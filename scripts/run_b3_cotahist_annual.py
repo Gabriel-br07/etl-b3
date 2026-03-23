@@ -98,11 +98,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Stop on first year error (default: continue other years)",
     )
+    p.add_argument(
+        "--track-in-file-duplicates",
+        action="store_true",
+        help=(
+            "During parse validation, count duplicate natural keys in the TXT "
+            "(extra memory on very large files; default off)"
+        ),
+    )
     return p.parse_args()
 
 
-def _log_parse_stats(year: int, txt_path: Path) -> None:
-    summary = parse_cotahist_txt_stats_only(txt_path)
+def _log_parse_stats(
+    year: int, txt_path: Path, *, track_in_file_duplicates: bool
+) -> None:
+    summary = parse_cotahist_txt_stats_only(
+        txt_path, track_in_file_duplicates=track_in_file_duplicates
+    )
     logger.info(
         "[cotahist] parse-validation year=%s file=%s lines=%s valid=%s invalid=%s dup_keys=%s",
         year,
@@ -164,7 +176,9 @@ def main() -> None:
                 if not zip_path.is_file():
                     download_cotahist_zip(year, zip_path)
                 txt_path = extract_cotahist_txt(zip_path, year_dir)
-                _log_parse_stats(year, txt_path)
+                _log_parse_stats(
+                    year, txt_path, track_in_file_duplicates=args.track_in_file_duplicates
+                )
                 continue
 
             # Default: download + extract + parse validation (no DB)
@@ -173,7 +187,9 @@ def main() -> None:
 
             download_cotahist_zip(year, zip_path)
             txt_path = extract_cotahist_txt(zip_path, year_dir)
-            _log_parse_stats(year, txt_path)
+            _log_parse_stats(
+                year, txt_path, track_in_file_duplicates=args.track_in_file_duplicates
+            )
             logger.info("[cotahist] fetch+validate done year=%s txt=%s", year, txt_path)
 
         except Exception as exc:

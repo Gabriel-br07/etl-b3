@@ -52,7 +52,7 @@ from typing import Optional, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.logging import configure_logging, get_logger
-from app.core.config import settings
+from app.core.config import B3_COTAHIST_ANNUAL_DIR_DEFAULT, settings
 
 # Configure logging early so lazy-imported modules inherit configuration
 configure_logging()
@@ -172,6 +172,11 @@ def _cotahist_txt_sort_key(path: Path) -> tuple:
     return (1, path.name.lower(), str(path))
 
 
+def _normalized_cotahist_settings_root(settings_root: str) -> str:
+    s = str(settings_root).strip()
+    return B3_COTAHIST_ANNUAL_DIR_DEFAULT if not s else s
+
+
 def resolve_cotahist_txt_files(
     *,
     cotahist_txt: Sequence[Path] | None,
@@ -183,7 +188,11 @@ def resolve_cotahist_txt_files(
     settings_root: str,
 ) -> list[Path]:
     """Resolve one or more COTAHIST TXT paths from CLI arguments."""
-    root = Path(cotahist_data_dir) if cotahist_data_dir is not None else Path(settings_root)
+    root = (
+        Path(cotahist_data_dir)
+        if cotahist_data_dir is not None
+        else Path(_normalized_cotahist_settings_root(settings_root))
+    )
     out: list[Path] = []
 
     if cotahist_txt:
@@ -202,8 +211,14 @@ def resolve_cotahist_txt_files(
 
     if cotahist_dir is not None:
         base = cotahist_dir.resolve()
-        found = sorted(base.glob("**/COTAHIST_A*.TXT"), key=_cotahist_txt_sort_key)
-        out.extend(found)
+        if base.is_dir():
+            found = sorted(base.glob("**/COTAHIST_A*.TXT"), key=_cotahist_txt_sort_key)
+            out.extend(found)
+        else:
+            logger.warning(
+                "COTAHIST cotahist_dir is not a directory (skipping **/COTAHIST_A*.TXT glob): %s",
+                base,
+            )
 
     seen: set[Path] = set()
     unique: list[Path] = []
