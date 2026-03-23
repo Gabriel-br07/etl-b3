@@ -86,12 +86,26 @@ def test_historical_idempotent_row_count_and_refreshes_ingested_at(tmp_path: Pat
     run_cotahist_historical_pipeline(paths, record_audit=True)
     with managed_session() as db:
         count1 = db.execute(text("SELECT COUNT(*) FROM fact_cotahist_daily")).scalar_one()
-        t1 = db.execute(text("SELECT ingested_at FROM fact_cotahist_daily LIMIT 1")).scalar_one()
+        t1 = db.execute(
+            text(
+                "SELECT ingested_at FROM fact_cotahist_daily "
+                "WHERE trade_date = :trade_date AND codneg = :codneg "
+                "ORDER BY ingested_at DESC LIMIT 1"
+            ),
+            {"trade_date": "2024-01-02", "codneg": "PETR4"},
+        ).scalar_one()
 
     run_cotahist_historical_pipeline(paths, record_audit=True)
     with managed_session() as db:
         count2 = db.execute(text("SELECT COUNT(*) FROM fact_cotahist_daily")).scalar_one()
-        t2 = db.execute(text("SELECT ingested_at FROM fact_cotahist_daily LIMIT 1")).scalar_one()
+        t2 = db.execute(
+            text(
+                "SELECT ingested_at FROM fact_cotahist_daily "
+                "WHERE trade_date = :trade_date AND codneg = :codneg "
+                "ORDER BY ingested_at DESC LIMIT 1"
+            ),
+            {"trade_date": "2024-01-02", "codneg": "PETR4"},
+        ).scalar_one()
 
     assert count1 == count2
     assert count1 >= 1
@@ -104,10 +118,30 @@ def test_historical_last_file_in_window_wins_source_file_name(tmp_path: Path) ->
     from app.etl.orchestration.pipeline import run_cotahist_historical_pipeline
 
     paths = _cotahist_txt_for_years(tmp_path, [2000, 2001])
+
+    # Ensure there are no pre-existing rows for these source files so we only
+    # assert against data ingested by this test run.
+    with managed_session() as db:
+        db.execute(
+            text(
+                "DELETE FROM fact_cotahist_daily "
+                "WHERE source_file_name IN (:f1, :f2)"
+            ),
+            {"f1": "COTAHIST_A2000.TXT", "f2": "COTAHIST_A2001.TXT"},
+        )
+
     run_cotahist_historical_pipeline(paths, record_audit=False)
 
     with managed_session() as db:
-        src = db.execute(text("SELECT source_file_name FROM fact_cotahist_daily LIMIT 1")).scalar_one()
+        src = db.execute(
+            text(
+                "SELECT source_file_name FROM fact_cotahist_daily "
+                "WHERE source_file_name IN (:f1, :f2) "
+                "ORDER BY source_file_name DESC "
+                "LIMIT 1"
+            ),
+            {"f1": "COTAHIST_A2000.TXT", "f2": "COTAHIST_A2001.TXT"},
+        ).scalar_one()
 
     assert src == "COTAHIST_A2001.TXT"
 

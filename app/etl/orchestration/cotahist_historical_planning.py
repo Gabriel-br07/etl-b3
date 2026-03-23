@@ -48,17 +48,23 @@ def group_paths_into_two_year_windows(paths: Sequence[Path]) -> list[list[Path]]
     if not paths:
         return []
     ordered = sort_cotahist_paths(paths)
-    years_sorted_unique: list[int] = []
-    seen: set[int] = set()
-    for p in ordered:
-        y = cotahist_year_from_path(p)
-        if y not in seen:
-            seen.add(y)
-            years_sorted_unique.append(y)
+
+    # Determine the minimum year present to anchor 2-year calendar windows.
+    years = [cotahist_year_from_path(p) for p in ordered]
+    min_year = min(years)
+
+    # Bucket paths into 2-year ranges: [min_year, min_year+1], [min_year+2, min_year+3], ...
+    buckets: dict[int, list[Path]] = {}
+    for path, year in zip(ordered, years):
+        bucket_idx = (year - min_year) // 2
+        if bucket_idx not in buckets:
+            buckets[bucket_idx] = []
+        buckets[bucket_idx].append(path)
+
+    # Assemble windows in ascending calendar order of their 2-year ranges.
     windows: list[list[Path]] = []
-    for i in range(0, len(years_sorted_unique), 2):
-        y_window = set(years_sorted_unique[i : i + 2])
-        windows.append([p for p in ordered if cotahist_year_from_path(p) in y_window])
+    for idx in sorted(buckets):
+        windows.append(buckets[idx])
     return windows
 
 
