@@ -96,6 +96,10 @@ def download_cotahist_zip(
     url = cotahist_annual_zip_url(year, base_url=base_url)
     timeout = timeout if timeout is not None else settings.b3_cotahist_timeout
     max_retries = max_retries if max_retries is not None else settings.b3_cotahist_max_retries
+    if max_retries < 1:
+        raise ValueError(f"max_retries must be >= 1 (got {max_retries!r})")
+    if timeout is not None and timeout <= 0:
+        raise ValueError(f"timeout must be a positive number (got {timeout!r})")
 
     headers = {
         **DEFAULT_HEADERS,

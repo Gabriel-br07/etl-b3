@@ -63,7 +63,7 @@ def ingest_cotahist_txt_file(
     txt_path: Path | str,
     *,
     source_file_name: str | None = None,
-    track_in_file_duplicates: bool = True,
+    track_in_file_duplicates: bool = False,
     batch_size: int = 500,
     progress_heartbeat: bool = True,
 ) -> CotahistIngestSummary:
