@@ -19,7 +19,7 @@ run_cotahist_annual_pipeline(txt_path)
     Loads fact_cotahist_daily from a COTAHIST_A*.TXT fixed-width file.
 
 run_cotahist_historical_pipeline(txt_paths)
-    Multi-file historical load: 2-year windows, 20k ingest batches, one ``etl_run``.
+    Multi-file historical load: 2-year windows, 50k ingest batches, one ``etl_run``.
 
 By default each function records ``etl_runs`` audit rows. ``scripts/run_etl.py``
 uses ``record_audit=True`` for every step so CLI runs are auditable. Pass
@@ -473,7 +473,7 @@ def run_cotahist_historical_pipeline(
     record_audit: bool = True,
     track_in_file_duplicates: bool = False,
 ) -> dict:
-    """Load multiple COTAHIST annual TXTs in 2-year windows with 20k ingest batches.
+    """Load multiple COTAHIST annual TXTs in 2-year windows with 50k ingest batches.
 
     Uses a **single** ``etl_runs`` row for the whole job (``pipeline_name`` =
     ``cotahist_historical``). Each file is committed in its own ``managed_session``
