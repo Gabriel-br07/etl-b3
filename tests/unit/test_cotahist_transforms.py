@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
+from app.db.models import FactCotahistDaily
 from app.etl.parsers.cotahist_parser import CotahistRawQuote
 from app.etl.transforms.cotahist_transforms import (
     natural_key_tuple,
@@ -69,3 +70,23 @@ def test_natural_key_stable():
 def test_invalid_date_returns_none():
     raw = replace(_minimal_raw(), trade_date_yyyymmdd="abcdefgh")
     assert normalize_cotahist_quote(raw, source_file_name="f") is None
+
+
+def test_normalize_payload_keys_match_fact_table_excluding_autogen():
+    row = normalize_cotahist_quote(_minimal_raw(), source_file_name="f.TXT")
+    assert row is not None
+    table_cols = {c.name for c in FactCotahistDaily.__table__.columns}
+    payload_keys = set(row)
+    expected = table_cols - {"id", "ingested_at"}
+    assert payload_keys == expected
+
+
+def test_dedupe_cotahist_batch_last_row_wins_per_natural_key():
+    from app.etl.loaders.db_loader import _dedupe_cotahist_batch
+
+    row = normalize_cotahist_quote(_minimal_raw(), source_file_name="first.TXT")
+    assert row is not None
+    row2 = {**row, "last_price": row["last_price"] + 1 if row["last_price"] else None, "source_file_name": "second.TXT"}
+    out = _dedupe_cotahist_batch([row, row2])
+    assert len(out) == 1
+    assert out[0]["source_file_name"] == "second.TXT"
