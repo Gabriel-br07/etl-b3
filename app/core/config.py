@@ -1,6 +1,10 @@
 """Application configuration and settings."""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Shared default for ``b3_cotahist_annual_dir`` (empty env must not resolve to CWD).
+B3_COTAHIST_ANNUAL_DIR_DEFAULT: str = "data/raw/b3/cotahist_annual"
 
 
 class Settings(BaseSettings):
@@ -104,7 +108,7 @@ class Settings(BaseSettings):
 
     #: Root for annual COTAHIST on disk: ``{this}/{year}/COTAHIST_A{year}.zip|.TXT``.
     #: Env var: B3_COTAHIST_ANNUAL_DIR
-    b3_cotahist_annual_dir: str = "data/raw/b3/cotahist_annual"
+    b3_cotahist_annual_dir: str = B3_COTAHIST_ANNUAL_DIR_DEFAULT
 
     # Logging
     log_level: str = "INFO"
@@ -112,6 +116,16 @@ class Settings(BaseSettings):
     # API metadata
     api_title: str = "ETL B3 API"
     api_version: str = "0.1.0"
+
+    @field_validator("b3_cotahist_annual_dir", mode="before")
+    @classmethod
+    def _normalize_b3_cotahist_annual_dir(cls, v: object) -> str:
+        if v is None:
+            return B3_COTAHIST_ANNUAL_DIR_DEFAULT
+        s = str(v).strip()
+        if not s:
+            return B3_COTAHIST_ANNUAL_DIR_DEFAULT
+        return s
 
 
 settings = Settings()
