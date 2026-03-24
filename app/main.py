@@ -6,9 +6,11 @@ from scalar_fastapi import get_scalar_api_reference
 
 from app.api.routes import (
     assets_router,
+    cotahist_router,
     etl_router,
     fact_quotes_router,
     health_router,
+    market_router,
     quotes_router,
     trades_router,
 )
@@ -23,7 +25,8 @@ app = FastAPI(
     description=(
         "ETL pipeline and data API for B3 public daily market data (Brazil stock exchange). "
         "Provides access to listed instruments (assets), daily quotes, daily trades, "
-        "and intraday fact-quotes; plus live delayed data from B3 and ETL triggers."
+        "intraday fact-quotes, COTAHIST history, market overviews, candles, indicators, "
+        "ETL observability; plus live delayed data from B3 and ETL triggers."
     ),
     docs_url=None,   # Disable default Swagger UI
     redoc_url=None,  # Disable default ReDoc UI
@@ -33,7 +36,9 @@ app = FastAPI(
         {"name": "Quotes", "description": "Daily quotes (DB) and live B3 snapshots."},
         {"name": "Trades", "description": "Daily consolidated trades (fact_daily_trades)."},
         {"name": "Fact Quotes", "description": "Intraday quote series from DB (fact_quotes hypertable)."},
-        {"name": "ETL", "description": "ETL pipeline triggers (run-latest, backfill)."},
+        {"name": "COTAHIST", "description": "Annual COTAHIST type-01 facts (fact_cotahist_daily)."},
+        {"name": "Market", "description": "Aggregated cross-asset metrics for a trading day."},
+        {"name": "ETL", "description": "ETL pipeline triggers (run-latest, backfill) and run history."},
     ],
 )
 
@@ -46,6 +51,8 @@ app.include_router(assets_router)
 app.include_router(quotes_router)
 app.include_router(trades_router)
 app.include_router(fact_quotes_router)
+app.include_router(cotahist_router)
+app.include_router(market_router)
 app.include_router(etl_router)
 
 
