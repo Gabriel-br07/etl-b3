@@ -26,4 +26,8 @@ def test_health_returns_ok(e2e_base_url: str):
 def test_openapi_available(e2e_base_url: str):
     response = httpx.get(f"{e2e_base_url}/openapi.json", timeout=15.0)
     assert response.status_code == 200
-    assert "openapi" in response.json()
+    schema = response.json()
+    assert "openapi" in schema
+    paths = schema.get("paths", {})
+    assert "/cotahist/{ticker}/history" in paths
+    assert "/etl/runs" in paths
