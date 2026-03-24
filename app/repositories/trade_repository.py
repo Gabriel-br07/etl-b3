@@ -81,6 +81,22 @@ class TradeRepository:
         stmt = stmt.order_by(FactDailyTrade.trade_date.desc()).limit(limit)
         return list(self.db.execute(stmt).scalars().all())
 
+    def get_latest_for_ticker(self, ticker: str) -> FactDailyTrade | None:
+        stmt = (
+            select(FactDailyTrade)
+            .where(FactDailyTrade.ticker == ticker.upper())
+            .order_by(FactDailyTrade.trade_date.desc())
+            .limit(1)
+        )
+        return self.db.execute(stmt).scalar_one_or_none()
+
+    def min_max_trade_dates(self, ticker: str) -> tuple[date | None, date | None]:
+        stmt = select(func.min(FactDailyTrade.trade_date), func.max(FactDailyTrade.trade_date)).where(
+            FactDailyTrade.ticker == ticker.upper()
+        )
+        row = self.db.execute(stmt).one()
+        return row[0], row[1]
+
     def upsert_many(self, rows: list[dict]) -> int:
         """Upsert trades by (ticker, trade_date). Returns affected row count."""
         if not rows:

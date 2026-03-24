@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.constants import ETLStatus
@@ -75,4 +76,34 @@ class ETLRunRepository:
         Returns None if the run does not exist (e.g. was never committed).
         """
         return self.db.get(ETLRun, run_id)
+
+    def list_runs(
+        self,
+        *,
+        pipeline_name: str | None = None,
+        status: str | None = None,
+        source_date: date | None = None,
+        started_after: datetime | None = None,
+        started_before: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[ETLRun], int]:
+        """Paginated runs, newest ``started_at`` first."""
+        base = select(ETLRun)
+        if pipeline_name:
+            base = base.where(ETLRun.pipeline_name == pipeline_name.strip())
+        if status:
+            base = base.where(ETLRun.status == status.strip().lower())
+        if source_date is not None:
+            base = base.where(ETLRun.source_date == source_date)
+        if started_after is not None:
+            base = base.where(ETLRun.started_at >= started_after)
+        if started_before is not None:
+            base = base.where(ETLRun.started_at <= started_before)
+        total = self.db.execute(
+            select(func.count()).select_from(base.subquery())
+        ).scalar_one()
+        ordered = base.order_by(ETLRun.started_at.desc(), ETLRun.id.desc())
+        items = self.db.execute(ordered.limit(limit).offset(offset)).scalars().all()
+        return list(items), total
 

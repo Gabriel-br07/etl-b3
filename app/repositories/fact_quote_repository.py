@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -41,6 +41,22 @@ class FactQuoteRepository:
             .order_by(FactQuote.quoted_at)
         )
         return list(self.db.execute(stmt).scalars().all())
+
+    def get_latest_for_ticker(self, ticker: str):
+        stmt = (
+            select(FactQuote)
+            .where(FactQuote.ticker == ticker.upper())
+            .order_by(FactQuote.quoted_at.desc())
+            .limit(1)
+        )
+        return self.db.execute(stmt).scalar_one_or_none()
+
+    def min_max_quoted_at(self, ticker: str) -> tuple[datetime | None, datetime | None]:
+        stmt = select(func.min(FactQuote.quoted_at), func.max(FactQuote.quoted_at)).where(
+            FactQuote.ticker == ticker.upper()
+        )
+        row = self.db.execute(stmt).one()
+        return row[0], row[1]
 
     def insert_many(self, rows: list[dict]) -> int:
         """Insert intraday quote rows.  On conflict (ticker, quoted_at) do nothing
