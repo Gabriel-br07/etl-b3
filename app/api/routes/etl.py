@@ -8,19 +8,99 @@ resolves the most recent instruments + trades CSV from B3_DATA_DIR for
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.constants import SourceMode
 from app.db.engine import get_db
 from app.etl.orchestration.pipeline import run_instruments_and_trades_pipeline
-from app.schemas import ETLBackfillRequest, ETLRunRequest
+from app.repositories.etl_run_repository import ETLRunRepository
+from app.schemas import ETLBackfillRequest, ETLRunListItem, ETLRunRequest, PaginatedResponse
+from app.db.models import ETLRun
 
 router = APIRouter(prefix="/etl", tags=["ETL"])
+
+
+def _parse_started_filter(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _etl_run_to_item(run: ETLRun) -> ETLRunListItem:
+    duration: float | None = None
+    if run.finished_at is not None:
+        duration = (run.finished_at - run.started_at).total_seconds()
+    return ETLRunListItem(
+        run_id=run.id,
+        pipeline_name=run.pipeline_name,
+        status=run.status,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        duration_seconds=duration,
+        source_date=run.source_date,
+        source_file=run.source_file,
+        message=run.message,
+        rows_inserted=run.rows_inserted,
+        rows_failed=run.rows_failed,
+    )
+
+
+@router.get(
+    "/runs",
+    response_model=PaginatedResponse[ETLRunListItem],
+    summary="List ETL run history",
+    description=(
+        "Paginated audit log from ``etl_runs``, newest first. "
+        "Filter by pipeline, status, source date, or started_at window. "
+        "``duration_seconds`` is set when ``finished_at`` is present."
+    ),
+    responses={
+        200: {"description": "Paginated ETL runs."},
+        400: {"description": "Invalid datetime filter."},
+    },
+)
+def list_etl_runs(
+    pipeline_name: str | None = Query(None, description="Exact pipeline_name match."),
+    status: str | None = Query(None, description="Run status (e.g. success, failed, running)."),
+    source_date: date | None = Query(None),
+    started_after: str | None = Query(None, description="ISO 8601 lower bound on started_at."),
+    started_before: str | None = Query(None, description="ISO 8601 upper bound on started_at."),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+) -> PaginatedResponse[ETLRunListItem]:
+    sa = _parse_started_filter(started_after)
+    sb = _parse_started_filter(started_before)
+    if started_after is not None and sa is None:
+        raise HTTPException(status_code=400, detail="Invalid started_after; use ISO 8601.")
+    if started_before is not None and sb is None:
+        raise HTTPException(status_code=400, detail="Invalid started_before; use ISO 8601.")
+    if sa is not None and sb is not None and sb < sa:
+        raise HTTPException(status_code=400, detail="started_before must be >= started_after.")
+    repo = ETLRunRepository(db)
+    rows, total = repo.list_runs(
+        pipeline_name=pipeline_name,
+        status=status,
+        source_date=source_date,
+        started_after=sa,
+        started_before=sb,
+        limit=limit,
+        offset=offset,
+    )
+    return PaginatedResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=[_etl_run_to_item(r) for r in rows],
+    )
 
 
 # ---------------------------------------------------------------------------
