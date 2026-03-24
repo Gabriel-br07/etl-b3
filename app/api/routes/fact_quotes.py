@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
 from app.repositories.fact_quote_repository import FactQuoteRepository
-from app.schemas import FactQuoteRead
+from app.schemas import CandleRead, FactQuoteRead
+from app.use_cases.quotes import candles as candle_uc
 
 router = APIRouter(prefix="/fact-quotes", tags=["Fact Quotes"])
 
@@ -72,6 +73,54 @@ def get_fact_quote_series(
         limit=limit,
     )
     return [FactQuoteRead.model_validate(q) for q in items]
+
+
+@router.get(
+    "/{ticker}/candles",
+    response_model=list[CandleRead],
+    summary="Intraday OHLC candles from fact_quotes",
+    description=(
+        "Aggregates persisted ``fact_quotes`` into time buckets (UTC). "
+        "Unlike ``GET /quotes/{ticker}/candles``, this route **only** uses the hypertable — "
+        "no ``fact_daily_quotes`` fallback. ``point_count`` is the number of raw quotes per candle."
+    ),
+    responses={
+        200: {"description": "Candles oldest-to-newest."},
+        400: {"description": "Invalid interval or time range."},
+    },
+)
+def get_fact_quote_candles(
+    ticker: str,
+    start: str | None = Query(None, description="Range start (ISO 8601)."),
+    end: str | None = Query(None, description="Range end (ISO 8601)."),
+    interval: str = Query("15m", description="5m, 15m, or 1h (not 1d)."),
+    limit: int = Query(500, ge=1, le=5000),
+    db: Session = Depends(get_db),
+) -> list[CandleRead]:
+    if interval == "1d":
+        raise HTTPException(
+            status_code=400,
+            detail="Use GET /quotes/{ticker}/candles with interval=1d for daily candles.",
+        )
+    try:
+        candle_uc.validate_interval(interval)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    start_dt = _parse_datetime(start)
+    end_dt = _parse_datetime(end)
+    if start is not None and start_dt is None:
+        raise HTTPException(status_code=400, detail="Invalid start datetime; use ISO 8601 format.")
+    if end is not None and end_dt is None:
+        raise HTTPException(status_code=400, detail="Invalid end datetime; use ISO 8601 format.")
+    if start_dt is not None and end_dt is not None and end_dt < start_dt:
+        raise HTTPException(status_code=400, detail="end must be >= start.")
+    repo = FactQuoteRepository(db)
+    points = [
+        (p.quoted_at, p.close_price)
+        for p in repo.get_series(ticker.upper(), start=start_dt, end=end_dt, limit=50_000)
+    ]
+    raw = candle_uc.intraday_candles_from_points(points, interval, limit=limit)
+    return [CandleRead(**x) for x in raw]
 
 
 @router.get(

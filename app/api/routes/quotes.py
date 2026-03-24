@@ -4,24 +4,48 @@ DB-backed endpoints: GET /quotes/latest, GET /quotes/{ticker}/history.
 Live B3 endpoints: GET /quotes/{ticker}, GET /quotes/{ticker}/snapshot, GET /quotes/{ticker}/intraday.
 """
 
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.core.market_data_constants import (
+    INDICATOR_NAMES,
+    INDICATOR_PERIOD_MAX,
+    INDICATOR_PERIOD_MIN,
+)
 from app.db.engine import get_db
 from app.integrations.b3.exceptions import (
     B3TemporaryBlockError,
     B3TickerNotFoundError,
     B3UnexpectedResponseError,
 )
+from app.repositories.fact_quote_repository import FactQuoteRepository
 from app.repositories.quote_repository import QuoteRepository
-from app.schemas import DailyQuoteRead, PaginatedResponse
+from app.schemas import (
+    CandleRead,
+    DailyQuoteRead,
+    IndicatorSeriesRead,
+    IndicatorValuePoint,
+    PaginatedResponse,
+)
+from app.use_cases.quotes import candles as candle_uc
 from app.use_cases.quotes.get_daily_fluctuation import get_daily_fluctuation
 from app.use_cases.quotes.get_intraday_series import get_intraday_series
 from app.use_cases.quotes.get_latest_snapshot import get_latest_snapshot
+from app.use_cases.quotes.indicators import build_indicator_series
 
 router = APIRouter(prefix="/quotes", tags=["Quotes"])
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _parse_ticker_list(tickers: str | None) -> list[str] | None:
@@ -108,6 +132,142 @@ def get_quote_history(
     if not items:
         raise HTTPException(status_code=404, detail=f"No quotes found for ticker '{ticker}'.")
     return [DailyQuoteRead.model_validate(q) for q in items]
+
+
+@router.get(
+    "/{ticker}/candles",
+    response_model=list[CandleRead],
+    summary="OHLC candles for a ticker",
+    description=(
+        "**1d:** one candle per row in ``fact_daily_quotes`` (chronological). "
+        "OHLC uses ``last_price`` as open/close when dedicated open is unavailable; high/low from min/max. "
+        "**5m / 15m / 1h:** buckets over ``fact_quotes.close_price`` (UTC bucket boundaries). "
+        "Volume is financial volume for daily candles only."
+    ),
+    responses={
+        200: {"description": "Candles oldest-to-newest."},
+        400: {"description": "Invalid interval or time range."},
+    },
+)
+def get_quote_candles(
+    ticker: str,
+    start: str | None = Query(None, description="Range start (ISO 8601)."),
+    end: str | None = Query(None, description="Range end (ISO 8601)."),
+    interval: str = Query(
+        "1d",
+        description="Accepted: 1d, 5m, 15m, 1h.",
+    ),
+    limit: int = Query(500, ge=1, le=5000, description="Max candles returned (most recent if truncated)."),
+    db: Session = Depends(get_db),
+) -> list[CandleRead]:
+    try:
+        candle_uc.validate_interval(interval)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    start_dt = _parse_dt(start)
+    end_dt = _parse_dt(end)
+    if start is not None and start_dt is None:
+        raise HTTPException(status_code=400, detail="Invalid start; use ISO 8601.")
+    if end is not None and end_dt is None:
+        raise HTTPException(status_code=400, detail="Invalid end; use ISO 8601.")
+    if start_dt is not None and end_dt is not None and end_dt < start_dt:
+        raise HTTPException(status_code=400, detail="end must be >= start.")
+    t = ticker.upper()
+    qrepo = QuoteRepository(db)
+    frepo = FactQuoteRepository(db)
+    if interval == "1d":
+        sd = start_dt.date() if start_dt else None
+        ed = end_dt.date() if end_dt else None
+        rows = qrepo.get_history_chronological(t, start_date=sd, end_date=ed, limit=10000)
+        raw = candle_uc.daily_candles_from_quotes(rows)
+        raw = candle_uc.clip_candles_chronological(raw, limit)
+    else:
+        raw = candle_uc.intraday_candles_from_points(
+            [
+                (p.quoted_at, p.close_price)
+                for p in frepo.get_series(t, start=start_dt, end=end_dt, limit=50_000)
+            ],
+            interval,
+            limit=limit,
+        )
+    return [CandleRead(**x) for x in raw]
+
+
+@router.get(
+    "/{ticker}/indicators",
+    response_model=IndicatorSeriesRead,
+    summary="Technical indicators from daily closes",
+    description=(
+        "Computes **SMA**, **EMA**, or **RSI** from ``fact_daily_quotes.last_price`` (chronological). "
+        "**SMA/EMA:** period is the window length. **RSI:** Wilder smoothing on close-to-close changes; "
+        "needs at least ``period + 1`` closes. Values are null until enough history exists."
+    ),
+    responses={
+        200: {"description": "Indicator series."},
+        400: {"description": "Invalid indicator or period."},
+    },
+)
+def get_quote_indicators(
+    ticker: str,
+    indicator: str = Query(..., description="SMA, EMA, or RSI.", examples=["SMA"]),
+    period: int = Query(14, ge=INDICATOR_PERIOD_MIN, le=INDICATOR_PERIOD_MAX),
+    start: str | None = Query(None, description="Optional start trade_date filter (ISO date or datetime)."),
+    end: str | None = Query(None),
+    limit: int = Query(500, ge=1, le=5000, description="Max points returned from the end of the series."),
+    db: Session = Depends(get_db),
+) -> IndicatorSeriesRead:
+    ind = indicator.strip().upper()
+    if ind not in INDICATOR_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"indicator must be one of {sorted(INDICATOR_NAMES)}.",
+        )
+    start_dt = _parse_dt(start)
+    end_dt = _parse_dt(end)
+    if start is not None and start_dt is None:
+        try:
+            start_dt = datetime.combine(date.fromisoformat(start), datetime.min.time())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid start date.") from None
+    if end is not None and end_dt is None:
+        try:
+            end_dt = datetime.combine(date.fromisoformat(end), datetime.max.time())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid end date.") from None
+    if start_dt is not None and end_dt is not None and end_dt < start_dt:
+        raise HTTPException(status_code=400, detail="end must be >= start.")
+    sd = start_dt.date() if start_dt else None
+    ed = end_dt.date() if end_dt else None
+    rows = QuoteRepository(db).get_history_chronological(
+        ticker.upper(), start_date=sd, end_date=ed, limit=10000
+    )
+    dated: list[tuple[date, object]] = [
+        (q.trade_date, q.last_price) for q in rows if q.last_price is not None
+    ]
+    if not dated:
+        return IndicatorSeriesRead(
+            ticker=ticker.upper(),
+            indicator=ind,
+            period=period,
+            source_range={"start": None, "end": None},
+            values=[],
+        )
+    dates = [d for d, _ in dated]
+    closes = [Decimal(str(p)) for _, p in dated]
+    try:
+        series = build_indicator_series(dates, closes, ind, period)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if len(series) > limit:
+        series = series[-limit:]
+    values = [IndicatorValuePoint(as_of=d, value=v) for d, v in series]
+    return IndicatorSeriesRead(
+        ticker=ticker.upper(),
+        indicator=ind,
+        period=period,
+        source_range={"start": dates[0], "end": dates[-1]},
+        values=values,
+    )
 
 
 # ---------------------------------------------------------------------------
