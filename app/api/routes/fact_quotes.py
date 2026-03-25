@@ -115,9 +115,13 @@ def get_fact_quote_candles(
     if start_dt is not None and end_dt is not None and end_dt < start_dt:
         raise HTTPException(status_code=400, detail="end must be >= start.")
     repo = FactQuoteRepository(db)
+    # Make the number of raw points fetched proportional to the requested candle limit,
+    # while keeping an upper safety cap to avoid excessive queries.
+    # This reduces the chance that newer data is silently dropped due to a fixed point limit.
+    points_limit = min(50_000, limit * 100)
     points = [
         (p.quoted_at, p.close_price)
-        for p in repo.get_series(ticker.upper(), start=start_dt, end=end_dt, limit=50_000)
+        for p in repo.get_series(ticker.upper(), start=start_dt, end=end_dt, limit=points_limit)
     ]
     raw = candle_uc.intraday_candles_from_points(points, interval, limit=limit)
     return [CandleRead(**x) for x in raw]

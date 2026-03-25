@@ -182,11 +182,18 @@ def get_quote_candles(
         raw = candle_uc.daily_candles_from_quotes(rows)
         raw = candle_uc.clip_candles_chronological(raw, limit)
     else:
+        max_points = 50_000
+        points = list(frepo.get_series(t, start=start_dt, end=end_dt, limit=max_points))
+        if len(points) >= max_points:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Requested intraday range yields too many data points (>= 50,000). "
+                    "Please narrow the start/end time window."
+                ),
+            )
         raw = candle_uc.intraday_candles_from_points(
-            [
-                (p.quoted_at, p.close_price)
-                for p in frepo.get_series(t, start=start_dt, end=end_dt, limit=50_000)
-            ],
+            [(p.quoted_at, p.close_price) for p in points],
             interval,
             limit=limit,
         )

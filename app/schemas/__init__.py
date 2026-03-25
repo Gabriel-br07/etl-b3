@@ -211,7 +211,13 @@ class ETLRunListItem(BaseModel):
     )
     source_date: date | None = None
     source_file: str | None = None
-    message: str | None = Field(None, description="Error text when status is failed; null on success.")
+    message: str | None = Field(
+        None,
+        description=(
+            "Free-form message for the run: typically error text when status is failed, "
+            "or a summary/other note when status is successful; may be null."
+        ),
+    )
     rows_inserted: int | None = None
     rows_failed: int | None = None
 
