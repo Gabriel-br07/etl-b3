@@ -66,7 +66,7 @@ def test_openapi_has_expected_endpoints(client):
     assert "/fact-quotes/{ticker}/series" in paths
     assert "/fact-quotes/{ticker}/days/{trade_date}" in paths
     assert "/fact-quotes/{ticker}/candles" in paths
-    assert "/cotahist" in paths
+    assert "/cotahist/" in paths
     assert "/cotahist/{ticker}/history" in paths
     assert "/etl/runs" in paths
     assert "/market/overview" in paths
