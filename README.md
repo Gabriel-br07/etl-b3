@@ -286,7 +286,7 @@ GET /fact-quotes/PETR4/days/2024-06-14
 ├── CONTRIBUTING.md      # hooks, manual lint/typecheck, CI overview
 ├── TESTING-STRATEGY.md  # short pyramid summary; details in README
 ├── .env.example         # environment variable reference — copy to .env for local dev
-├── compose.yaml         # Docker Compose base: db, scheduler, api (profile)
+├── compose.yaml         # Docker Compose: db, scheduler; profiles api, cotahist
 ├── compose.override.yaml # Dev overrides: api hot reload + app bind mount (merged automatically)
 ├── Dockerfile           # unified scraper/scheduler image
 ├── Dockerfile.api       # slim API-only image (no Playwright)
@@ -496,7 +496,7 @@ python scripts/run_b3_quote_batch.py
 
 Compose uses two files:
 
-- **compose.yaml** — base definition for `db`, `scheduler`, and `api` (API is under profile `api`). Single source of truth.
+- **compose.yaml** — base definition for `db`, `scheduler`, optional `api` (profile `api`), and optional `cotahist` (profile `cotahist`). Single source of truth.
 - **compose.override.yaml** — development overrides only (hot reload and bind mount of `./app` for the `api` service). It is merged automatically only when you run `docker compose up` with no `-f` flag: Compose then loads `compose.yaml` and merges `compose.override.yaml` if present. If you run `docker compose -f compose.yaml up`, only the base file is loaded; to include the override, use `docker compose -f compose.yaml -f compose.override.yaml up`. To run without overrides (e.g. production-like), use `docker compose -f compose.yaml up` so that only the base file is used.
 
 The API service is built from `Dockerfile.api` (slim image, no Playwright).
@@ -530,6 +530,33 @@ docker compose logs -f api
 ```
 
 With `compose.override.yaml` present, the API runs with `--reload` and `./app` mounted, so code changes take effect without restarting the container.
+
+### Optional COTAHIST worker (separate container)
+
+Annual COTAHIST (B3 ZIPs → `fact_cotahist_daily`) can run **in parallel** with the scheduler: it uses the same DB and `scraper_data` volume, a different table than boletim/intraday loads, and **does not** run Alembic. The Compose service depends only on `db` (healthy); the worker waits until `fact_cotahist_daily` exists — apply migrations first (e.g. `alembic upgrade head` via the scheduler container or any other process).
+
+The `cotahist` service is **one-shot** (`restart: "no"`): it exits when fetch + load finish. Use the profile to opt in.
+
+```powershell
+docker compose --profile cotahist up -d
+docker compose --profile cotahist logs -f cotahist
+
+# Re-run after the container has exited (e.g. new years or retry)
+docker compose --profile cotahist run --rm cotahist
+```
+
+Useful environment variables (all optional):
+
+| Variable | Purpose |
+|----------|---------|
+| `B3_COTAHIST_ANNUAL_DIR` | On-disk root for `{year}/COTAHIST_A*.TXT` (Compose default: `/app/data/raw/b3/cotahist_annual`) |
+| `COTAHIST_SKIP_DOWNLOAD` | If `1` / `true`: load only; assume TXT/ZIPs already on the volume |
+| `COTAHIST_YEAR` | Single year (do not combine with START/END) |
+| `COTAHIST_YEAR_START` / `COTAHIST_YEAR_END` | Inclusive range (both required) |
+| `COTAHIST_FAIL_FAST` | If `true`: stop the fetch script on first year error |
+| `COTAHIST_TABLE_WAIT_RETRIES` / `COTAHIST_TABLE_WAIT_DELAY_S` | Poll limits while waiting for `fact_cotahist_daily` after connect |
+
+If `COTAHIST_YEAR*` are unset, the worker uses `B3_COTAHIST_YEAR_START` / `B3_COTAHIST_YEAR_END` from app settings (see `app/core/config.py`).
 
 ### Rebuild, stop, logs, shell
 
