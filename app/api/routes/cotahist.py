@@ -76,7 +76,7 @@ def get_cotahist_ticker_history(
 
 
 @router.get(
-    "",
+    "/",
     response_model=PaginatedResponse[CotahistDailyRead],
     summary="List COTAHIST rows (filterable)",
     description=(
