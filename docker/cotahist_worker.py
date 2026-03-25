@@ -101,20 +101,24 @@ def _resolve_year_args() -> tuple[list[str], list[str]]:
     start = os.environ.get("COTAHIST_YEAR_START")
     end = os.environ.get("COTAHIST_YEAR_END")
 
-    if single is not None and single.strip():
-        if start is not None or end is not None:
+    single_norm = single.strip() if single is not None else ""
+    start_norm = start.strip() if start is not None else ""
+    end_norm = end.strip() if end is not None else ""
+
+    if single_norm:
+        if start_norm or end_norm:
             raise SystemExit(
                 "Use either COTAHIST_YEAR or COTAHIST_YEAR_START/COTAHIST_YEAR_END, not both"
             )
-        y = int(single.strip())
+        y = int(single_norm)
         return ["--year", str(y)], ["--cotahist-year", str(y)]
 
-    if (start is not None and start.strip()) or (end is not None and end.strip()):
-        if not (start and str(start).strip() and end and str(end).strip()):
+    if start_norm or end_norm:
+        if not (start_norm and end_norm):
             raise SystemExit(
                 "COTAHIST_YEAR_START and COTAHIST_YEAR_END must both be set when using a range"
             )
-        lo, hi = int(start.strip()), int(end.strip())
+        lo, hi = int(start_norm), int(end_norm)
         if lo > hi:
             lo, hi = hi, lo
         fy = ["--from-year", str(lo), "--to-year", str(hi)]

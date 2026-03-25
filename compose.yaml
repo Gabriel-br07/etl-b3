@@ -169,9 +169,7 @@ services:
   # ---------------------------------------------------------------------------
   cotahist:
     profiles: [cotahist]
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: etlb3_scheduler
     container_name: etlb3_cotahist
     depends_on:
       db:
