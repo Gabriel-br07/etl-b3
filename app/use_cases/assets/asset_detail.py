@@ -102,8 +102,6 @@ def build_asset_overview(db: Session, ticker: str) -> AssetOverviewRead:
     cmin, cmax = cot.min_max_trade_dates(t)
 
     updates: list[datetime] = []
-    if asset:
-        updates.extend([asset.created_at, asset.updated_at])
     if dq and dq.ingested_at:
         updates.append(dq.ingested_at)
     if dt and dt.ingested_at:
