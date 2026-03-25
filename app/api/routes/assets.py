@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
 from app.repositories.asset_repository import AssetRepository
-from app.schemas import AssetRead, PaginatedResponse
+from app.schemas import AssetCoverageRead, AssetOverviewRead, AssetRead, PaginatedResponse
+from app.use_cases.assets.asset_detail import build_asset_coverage, build_asset_overview
 
 router = APIRouter(prefix="/assets", tags=["Assets"])
 
@@ -43,6 +44,36 @@ def list_assets(
         offset=offset,
         items=[AssetRead.model_validate(a) for a in items],
     )
+
+
+@router.get(
+    "/{ticker}/coverage",
+    response_model=AssetCoverageRead,
+    summary="Data coverage for a ticker",
+    description=(
+        "Shows whether the ticker exists in ``dim_assets`` and the min/max dates available "
+        "in daily quotes, daily trades, intraday ``fact_quotes``, and COTAHIST. "
+        "``live_delayed_b3`` indicates the app can call B3 delayed endpoints (best-effort)."
+    ),
+    responses={200: {"description": "Coverage summary."}},
+)
+def get_asset_coverage(ticker: str, db: Session = Depends(get_db)) -> AssetCoverageRead:
+    return build_asset_coverage(db, ticker)
+
+
+@router.get(
+    "/{ticker}/overview",
+    response_model=AssetOverviewRead,
+    summary="Consolidated asset overview",
+    description=(
+        "Single payload combining master data, latest DB quotes/trades/intraday, optional delayed B3 snapshot, "
+        "historical date ranges, and section flags. If B3 is unreachable, ``live_snapshot`` is null and "
+        "``sections.live_b3.has_data`` is false."
+    ),
+    responses={200: {"description": "Overview payload."}},
+)
+def get_asset_overview(ticker: str, db: Session = Depends(get_db)) -> AssetOverviewRead:
+    return build_asset_overview(db, ticker)
 
 
 @router.get(

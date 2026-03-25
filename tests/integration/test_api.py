@@ -65,6 +65,15 @@ def test_openapi_has_expected_endpoints(client):
     assert "/trades" in paths
     assert "/fact-quotes/{ticker}/series" in paths
     assert "/fact-quotes/{ticker}/days/{trade_date}" in paths
+    assert "/fact-quotes/{ticker}/candles" in paths
+    assert "/cotahist/" in paths
+    assert "/cotahist/{ticker}/history" in paths
+    assert "/etl/runs" in paths
+    assert "/market/overview" in paths
+    assert "/assets/{ticker}/coverage" in paths
+    assert "/assets/{ticker}/overview" in paths
+    assert "/quotes/{ticker}/candles" in paths
+    assert "/quotes/{ticker}/indicators" in paths
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +90,16 @@ def test_trades_endpoint_responds(client):
 def test_fact_quotes_series_endpoint_responds(client):
     """GET /fact-quotes/{ticker}/series should respond (200/500/503)."""
     response = client.get("/fact-quotes/PETR4/series")
+    assert response.status_code in (200, 500, 503)
+
+
+def test_etl_runs_endpoint_responds(client):
+    response = client.get("/etl/runs")
+    assert response.status_code in (200, 500, 503)
+
+
+def test_cotahist_history_endpoint_responds(client):
+    response = client.get("/cotahist/PETR4/history")
     assert response.status_code in (200, 500, 503)
 
 
@@ -177,6 +196,21 @@ def test_quotes_latest_filters_empty_strings_from_ticker_list():
             "tickers"
         ) or mock_repo.get_latest_per_ticker.call_args[0][0]
         assert "" not in (called_tickers or [])
+
+
+def test_quotes_indicators_invalid_indicator_returns_400(client):
+    r = client.get("/quotes/PETR4/indicators?indicator=NOTREAL&period=14")
+    assert r.status_code == 400
+
+
+def test_quotes_candles_invalid_interval_returns_400(client):
+    r = client.get("/quotes/PETR4/candles?interval=2h")
+    assert r.status_code == 400
+
+
+def test_fact_quotes_candles_rejects_1d(client):
+    r = client.get("/fact-quotes/PETR4/candles?interval=1d")
+    assert r.status_code == 400
 
 
 def test_quotes_latest_ticker_list_parsing():

@@ -64,6 +64,38 @@ class QuoteRepository:
         stmt = stmt.order_by(FactDailyQuote.trade_date.desc()).limit(limit)
         return list(self.db.execute(stmt).scalars().all())
 
+    def get_history_chronological(
+        self,
+        ticker: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        limit: int = 5000,
+    ) -> list[FactDailyQuote]:
+        """Oldest-first daily quotes for candles/indicators."""
+        stmt = select(FactDailyQuote).where(FactDailyQuote.ticker == ticker.upper())
+        if start_date:
+            stmt = stmt.where(FactDailyQuote.trade_date >= start_date)
+        if end_date:
+            stmt = stmt.where(FactDailyQuote.trade_date <= end_date)
+        stmt = stmt.order_by(FactDailyQuote.trade_date.asc()).limit(limit)
+        return list(self.db.execute(stmt).scalars().all())
+
+    def get_latest_for_ticker(self, ticker: str) -> FactDailyQuote | None:
+        stmt = (
+            select(FactDailyQuote)
+            .where(FactDailyQuote.ticker == ticker.upper())
+            .order_by(FactDailyQuote.trade_date.desc())
+            .limit(1)
+        )
+        return self.db.execute(stmt).scalar_one_or_none()
+
+    def min_max_trade_dates(self, ticker: str) -> tuple[date | None, date | None]:
+        stmt = select(func.min(FactDailyQuote.trade_date), func.max(FactDailyQuote.trade_date)).where(
+            FactDailyQuote.ticker == ticker.upper()
+        )
+        row = self.db.execute(stmt).one()
+        return row[0], row[1]
+
     def upsert_many(self, rows: list[dict]) -> int:
         """Upsert quotes by (ticker, trade_date). Returns affected row count."""
         if not rows:
