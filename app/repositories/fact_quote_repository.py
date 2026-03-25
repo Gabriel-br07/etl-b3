@@ -42,7 +42,7 @@ class FactQuoteRepository:
         )
         return list(self.db.execute(stmt).scalars().all())
 
-    def get_latest_for_ticker(self, ticker: str):
+    def get_latest_for_ticker(self, ticker: str) -> FactQuote | None:
         stmt = (
             select(FactQuote)
             .where(FactQuote.ticker == ticker.upper())

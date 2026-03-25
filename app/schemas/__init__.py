@@ -372,7 +372,11 @@ class AssetOverviewRead(BaseModel):
     financial_volume_latest: Decimal | None = None
     latest_update_at: datetime | None = Field(
         None,
-        description="Most recent ingested_at among included DB sections.",
+        description=(
+            "Most recent ``ingested_at`` among persisted market rows used in this payload "
+            "(latest daily quote, daily trade, intraday ``fact_quotes``). "
+            "Excludes ``dim_assets`` audit timestamps."
+        ),
     )
     sections: dict[str, AssetOverviewSectionMeta] = Field(
         default_factory=dict,
