@@ -44,6 +44,7 @@ echo "[entrypoint] ensuring ${VOLUME_ROOT} tree owned by scraper(1001)"
 mkdir -p \
     "${DATA_DIR}/b3/boletim_diario" \
     "${DATA_DIR}/b3/daily_fluctuation_history" \
+    "${DATA_DIR}/b3/cotahist_annual" \
     "${VOLUME_ROOT}/screenshots/b3" \
     "${VOLUME_ROOT}/traces/e2e"
 current_owner="$(stat -c '%u:%g' "${VOLUME_ROOT}" 2>/dev/null || echo '')"
@@ -59,6 +60,7 @@ ${DATA_DIR}
 ${DATA_DIR}/b3
 ${DATA_DIR}/b3/boletim_diario
 ${DATA_DIR}/b3/daily_fluctuation_history
+${DATA_DIR}/b3/cotahist_annual
 ${VOLUME_ROOT}/screenshots
 ${VOLUME_ROOT}/screenshots/b3
 ${VOLUME_ROOT}/traces

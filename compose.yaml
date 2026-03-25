@@ -2,7 +2,7 @@
 # compose.yaml — etl-b3 stack
 # =============================================================================
 #
-# Architecture: TWO core services + ONE optional API service.
+# Architecture: TWO core services + optional API + optional COTAHIST worker.
 #
 #   db         — TimescaleDB (PostgreSQL 16) with persistent named volume
 #   scheduler  — unified orchestrator that drives the full pipeline:
@@ -14,6 +14,9 @@
 #                  6. loop every 30 min         (run_b3_quote_batch.py → fact_quotes)
 #   api        — FastAPI HTTP API (optional — enable with --profile api)
 #                  Scalar docs at http://localhost:8000/scalar
+#   cotahist   — one-shot fetch + load annual COTAHIST (optional — profile cotahist)
+#                  Same image as scheduler; shares scraper_data; does not run Alembic.
+#                  Depends only on db (healthy); worker waits for fact_cotahist_daily — no scheduler coupling.
 #
 # Startup sequence:
 #   db starts → healthcheck passes → scheduler (and optionally api) start
@@ -24,6 +27,7 @@
 #   docker compose build
 #   docker compose up -d                        # db + scheduler only
 #   docker compose --profile api up -d         # db + scheduler + API
+#   docker compose --profile cotahist up -d    # unprofiled services + cotahist (typically db+scheduler+cotahist)
 #   docker compose logs -f scheduler
 #
 # Run migrations manually (first time or after schema changes):
@@ -157,6 +161,47 @@ services:
     volumes:
       - scraper_data:/app/data
     restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # COTAHIST: annual ZIP fetch + load into fact_cotahist_daily (profile cotahist)
+  #
+  # One-shot container: exits when the job finishes (restart: no).
+  # Readiness: wait_for_db + poll until fact_cotahist_daily exists (apply migrations any way you choose).
+  #
+  #   docker compose --profile cotahist up -d
+  #   docker compose --profile cotahist logs -f cotahist
+  #   docker compose --profile cotahist run --rm cotahist   # re-run manually
+  # ---------------------------------------------------------------------------
+  cotahist:
+    profiles: [cotahist]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: etlb3_cotahist
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: America/Sao_Paulo
+      B3_DATA_DIR: /app/data/raw
+      B3_COTAHIST_ANNUAL_DIR: /app/data/raw/b3/cotahist_annual
+      HOME: /home/scraper
+      PREFECT_HOME: /home/scraper/.prefect
+      PREFECT_PROFILES_PATH: /home/scraper/.prefect/profiles.toml
+      PYTHONPATH: /app
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      LANG: "C.UTF-8"
+      LC_ALL: "C.UTF-8"
+      DATABASE_URL: postgresql://etlb3:etlb3pass@db:5432/etlb3
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "10"
+      DB_POOL_RECYCLE: "1800"
+      LOG_LEVEL: INFO
+    volumes:
+      - scraper_data:/app/data
+    command: ["/app/.venv/bin/python", "/app/docker/cotahist_worker.py"]
+    restart: "no"
 
 volumes:
   db_data:
