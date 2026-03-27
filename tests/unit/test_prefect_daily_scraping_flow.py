@@ -4,7 +4,10 @@ from datetime import date
 from unittest.mock import patch
 
 from app.core.config import settings
-from app.etl.orchestration.prefect.flows.daily_scraping_flow import daily_scraping_flow
+from app.etl.orchestration.prefect.flows.daily_scraping_flow import (
+    daily_scraping_flow,
+    default_daily_parameters,
+)
 from app.etl.orchestration.prefect.tasks.scraping_tasks import scrape_cotahist_task
 
 
@@ -97,3 +100,44 @@ def test_scrape_cotahist_task_fn_runs_download_when_enabled(tmp_path, monkeypatc
     y, zip_path = args
     assert y == 2023
     assert zip_path.name == "COTAHIST_A2023.zip"
+
+
+def test_default_daily_parameters_disable_cotahist_by_default(monkeypatch):
+    monkeypatch.delenv("PREFECT_RUN_COTAHIST", raising=False)
+    params = default_daily_parameters()
+    assert params["run_cotahist"] is False
+
+
+def test_default_daily_parameters_enable_cotahist_when_explicit(monkeypatch):
+    monkeypatch.setenv("PREFECT_RUN_COTAHIST", "true")
+    params = default_daily_parameters()
+    assert params["run_cotahist"] is True
+
+
+def test_daily_scraping_flow_default_path_passes_run_cotahist_false(tmp_path):
+    cadastro = tmp_path / "cadastro.csv"
+    negocios = tmp_path / "negocios.csv"
+    cadastro.write_text("ticker\nPETR4", encoding="utf-8")
+    negocios.write_text("ticker;trade_date\nPETR4;2026-03-26", encoding="utf-8")
+
+    with patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.scrape_cadastro_task",
+        return_value=cadastro,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.scrape_negocios_task",
+        return_value=negocios,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.scrape_cotahist_task",
+        return_value=None,
+    ) as mock_cot, patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.validate_outputs_task",
+        return_value={"ok": True},
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.run_intraday_quote_batch_task"
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.trigger_transform_load_task",
+        return_value={"status": "success"},
+    ):
+        daily_scraping_flow(target_date=date(2026, 3, 26))
+
+    assert mock_cot.call_args.kwargs["enabled"] is False

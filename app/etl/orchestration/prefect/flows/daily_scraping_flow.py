@@ -21,7 +21,7 @@ from app.etl.orchestration.prefect.tasks.validation_tasks import validate_output
 def daily_scraping_flow(
     target_date: date | None = None,
     run_intraday: bool = True,
-    run_cotahist: bool = True,
+    run_cotahist: bool = False,
 ) -> dict:
     """Daily scraping orchestration with explicit task dependencies."""
     logger = get_run_logger()
@@ -58,5 +58,6 @@ def daily_scraping_flow(
 def default_daily_parameters() -> dict:
     return {
         "run_intraday": os.environ.get("PREFECT_RUN_INTRADAY", "true").lower() in ("1", "true", "yes"),
-        "run_cotahist": os.environ.get("PREFECT_RUN_COTAHIST", "true").lower() in ("1", "true", "yes"),
+        "run_cotahist": os.environ.get("PREFECT_RUN_COTAHIST", "false").lower()
+        in ("1", "true", "yes"),
     }
