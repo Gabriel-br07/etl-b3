@@ -8,6 +8,7 @@ Short, focused documentation for getting the project running locally or with Doc
 
 ## Overview
 
+- Primary orchestration path is Prefect (`app.etl.orchestration.prefect`), used by both local and Docker runs. **Canonical DAG and hot-path modules:** [`docs/etl_canonical_runtime.md`](docs/etl_canonical_runtime.md).
 - Scrapes B3 daily files (instruments + consolidated trades) using Playwright.
 - Normalizes files and runs a 25-minute quote ingestion loop that fetches per-ticker daily fluctuation histories and writes JSONL + report CSV outputs.
 - Stores results in **PostgreSQL + TimescaleDB** and exposes a FastAPI HTTP API (Scalar docs at `/scalar`).
@@ -16,24 +17,25 @@ Short, focused documentation for getting the project running locally or with Doc
 
 ## Architecture
 
-```
-scheduler (Docker container)
-  |
-  +--> daily Playwright scrapers
-  |      run_b3_scraper.py          -> cadastro_instrumentos_YYYYMMDD.normalized.csv
-  |      run_b3_scraper_negocios.py -> negocios_consolidados_YYYYMMDD.normalized.csv
-  |
-  +--> DB load: instruments + trades   (pipeline.py: run_instruments_and_trades_pipeline)
-  |      dim_assets        — upsert ON CONFLICT (ticker)
-  |      fact_daily_trades — upsert ON CONFLICT (ticker, trade_date)
-  |
-  +--> 25-min quote loop
-         run_b3_quote_batch.py -> daily_fluctuation_YYYYMMDDTHHMMSS.jsonl
-         |
-         +--> DB load: intraday quotes  (pipeline.py: run_intraday_quotes_pipeline)
-                fact_quotes (TimescaleDB hypertable, INSERT ON CONFLICT DO NOTHING)
+Default runtime (local + Docker): **Prefect** serves `daily_scraping_flow` (scrapers → validation → optional intraday quote batch → `pipeline.py` loads). See [`docs/etl_canonical_runtime.md`](docs/etl_canonical_runtime.md).
 
-ETL audit trail: etl_runs table records every pipeline execution (RUNNING → SUCCESS/FAILED).
+```
+Prefect (scripts/run_prefect_daily_flow.py OR python -m app.etl.orchestration.prefect.serve)
+  |
+  +--> scrape cadastro + negocios (+ optional COTAHIST year download)
+  |      BoletimDiarioScraper / NegociosConsolidadosScraper -> *.normalized.csv
+  |
+  +--> validate_outputs_task (scraping_output_validator)
+  |
+  +--> optional: intraday quote batch -> JSONL + report CSV
+  |
+  +--> pipeline.py
+         run_instruments_and_trades_pipeline -> dim_assets, fact_daily_trades
+         run_daily_quotes_pipeline          -> fact_daily_quotes
+         run_intraday_quotes_pipeline       -> fact_quotes (hypertable)
+         run_cotahist_historical_pipeline   -> fact_cotahist_daily (optional)
+
+ETL audit trail: etl_runs (+ scraper_run_audit for Prefect tasks). Legacy optional loop: docs/legacy_scheduler.md.
 API layer (FastAPI): /assets, /quotes, /trades, /fact-quotes, /health, /etl
 ```
 
@@ -257,8 +259,8 @@ GET /fact-quotes/PETR4/days/2024-06-14
 │   │   ├── ingestion/   # file adapters (local, remote), ticker filter
 │   │   ├── loaders/     # db_loader.py: load_assets, load_trades, load_intraday_quotes
 │   │   ├── orchestration/
-│   │   │   ├── pipeline.py     # ← PRIMARY: standalone ETL pipeline (used by scheduler + API)
-│   │   │   ├── flow.py         # Prefect-based flow (optional, for Prefect deployments)
+│   │   │   ├── pipeline.py     # ← PRIMARY: standalone ETL pipeline (Prefect handoff + run_etl + API)
+│   │   │   ├── prefect/        # Canonical runtime: flows, tasks, serve
 │   │   │   └── csv_resolver.py # CSV discovery with retry/fallback
 │   │   ├── parsers/     # instruments_parser, trades_parser, jsonl_quotes_parser
 │   │   └── transforms/  # b3_transforms (pure Polars functions)
@@ -274,7 +276,7 @@ GET /fact-quotes/PETR4/days/2024-06-14
 ├── docker/
 │   ├── entrypoint.sh        # root bootstrap: fix permissions, drop to scraper
 │   ├── run_daily_batch.sh   # runs both daily Playwright scrapers
-│   ├── scheduler.py         # main orchestrator loop
+│   ├── scheduler.py         # LEGACY optional loop (docs/legacy_scheduler.md); not default CMD
 │   └── initdb/
 │       └── 01_timescaledb.sql  # CREATE EXTENSION timescaledb (auto-run by Postgres)
 ├── scripts/             # CLI scripts: run_etl.py, run_b3_scraper.py, run_b3_quote_batch.py
@@ -304,7 +306,7 @@ Copy `.env.example` to `.env` and adjust for your environment.
 | `DB_POOL_SIZE` | `5` | `5` | SQLAlchemy connection pool size |
 | `DB_MAX_OVERFLOW` | `10` | `10` | Additional connections beyond pool_size |
 | `DB_POOL_RECYCLE` | `1800` | `1800` | Recycle connections after N seconds (prevents stale-connection errors) |
-| `RUN_MIGRATIONS_ON_STARTUP` | `true` | `true` | Auto-run `alembic upgrade head` on scheduler start |
+| `RUN_MIGRATIONS_ON_STARTUP` | `true` | `true` | Only used by **legacy** `docker/scheduler.py` (not by default Prefect CMD) |
 | `DAILY_RUN_HOUR` | `20` | `20` | Hour to trigger daily scrapers |
 | `DAILY_RUN_MINUTE` | `0` | `0` | Minute to trigger daily scrapers |
 | `SCRAPER_INTERVAL_SECONDS` | `1500` | `1500` | Quote loop cycle length (25 min) |
@@ -509,13 +511,12 @@ docker compose logs -f scheduler
 docker compose logs -f db
 ```
 
-On first start the scheduler will:
-1. Wait for the `db` service healthcheck to pass (`pg_isready`)
-2. Run `alembic upgrade head` automatically
-3. Wait until the scheduled daily run time (`DAILY_RUN_HOUR:DAILY_RUN_MINUTE`)
-4. Run the Playwright scrapers → produce CSVs
-5. Load instruments + trades into the DB (`dim_assets`, `fact_daily_trades`)
-6. Start the 25-minute quote loop → produce JSONL → load into `fact_quotes`
+On first start the **scheduler** container will:
+1. Wait for the `db` service healthcheck to pass (`depends_on: condition: service_healthy`)
+2. Run **entrypoint.sh** (data dirs + Prefect home), then **`python -m app.etl.orchestration.prefect.serve`**
+3. Prefect registers deployments; the **daily** flow runs on cron (`DAILY_RUN_HOUR` / `DAILY_RUN_MINUTE`)
+
+**Migrations:** the default CMD does **not** run Alembic automatically. Run `docker compose exec scheduler /app/.venv/bin/alembic upgrade head` (or use legacy `docker/scheduler.py`, which respects `RUN_MIGRATIONS_ON_STARTUP`). See [`docs/legacy_scheduler.md`](docs/legacy_scheduler.md).
 
 ### Start the optional API service
 
@@ -568,13 +569,18 @@ docker compose exec scheduler /app/.venv/bin/alembic upgrade head
 # Run ETL pipeline manually
 docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_etl.py
 
+# Run the Prefect daily flow manually (same orchestration code path as Docker)
+docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_prefect_daily_flow.py
+# Skip annual COTAHIST download for that run: add --no-cotahist
+# When enabled, the flow downloads each year in B3_COTAHIST_YEAR_START..B3_COTAHIST_YEAR_END (default 1986–2026); missing years (404) are skipped.
+
 # With explicit paths
 docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_etl.py \
     --instruments /app/data/raw/b3/boletim_diario/2026-03-08/cadastro_instrumentos_20260308.normalized.csv \
     --date 2026-03-08
 
-# Trigger daily scrapers immediately
-docker compose exec scheduler /app/docker/run_daily_batch.sh
+# Trigger daily flow immediately
+docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_prefect_daily_flow.py
 
 # Run quote batch manually
 docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_b3_quote_batch.py
@@ -708,7 +714,7 @@ alembic revision --autogenerate -m "describe_change"  # create migration from mo
 - `alembic upgrade head` is safe to run multiple times (idempotent).
 - The TimescaleDB extension is enabled by `docker/initdb/01_timescaledb.sql` which runs automatically on first DB container start.
 - The `fact_quotes` hypertable is created in migration `0002_schema_v2` via `SELECT create_hypertable(...)`. The migration works on plain PostgreSQL too — without TimescaleDB, `fact_quotes` is a regular table.
-- `flow.py` (Prefect-based flow) is preserved for teams using a Prefect server. For all other cases — local, Docker, scripts, API — use `pipeline.py` directly or `scripts/run_etl.py`.
+- Prefect flow orchestration now lives under `app/etl/orchestration/prefect/` and is the recommended path for local + Docker orchestration runs.
 - `DATABASE_URL` is the single source of truth for the database connection. Individual `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` components are documented in `.env.example` as reference.
 
 ---
