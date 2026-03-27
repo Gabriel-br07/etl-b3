@@ -68,7 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.logging import configure_logging, get_logger
 from app.etl.orchestration.csv_resolver import CSVNotFoundError, resolve_instruments_csv
-from app.use_cases.quotes.batch_ingestion import run_batch_quote_ingestion
+from app.etl.orchestration.prefect.tasks.scraping_tasks import run_intraday_quote_batch_task
 
 logger = get_logger(__name__)
 
@@ -234,11 +234,13 @@ def main() -> None:
                 instruments_path,
             )
 
-    report_path = run_batch_quote_ingestion(
+    # Thin wrapper mode: delegate execution to the Prefect-owned task function.
+    # We call .fn to execute the underlying function without requiring a flow context.
+    report_path = run_intraday_quote_batch_task.fn(
         instruments_csv=instruments_path,
         trades_csv=trades_path,
+        target_date=args.date or date.today(),
         filter_mode=args.filter_mode,
-        reference_date=args.date,
         output_dir=args.output_dir,
     )
     print(f"Done. Report written to: {report_path}")

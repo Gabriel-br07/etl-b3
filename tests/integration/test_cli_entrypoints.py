@@ -43,7 +43,7 @@ def test_run_b3_quote_batch_main_explicit_instruments_calls_ingestion(tmp_path):
     report_path = tmp_path / "report.csv"
     mod = _load_quote_batch_module()
     mock_ingest = MagicMock(return_value=report_path)
-    with patch.object(mod, "run_batch_quote_ingestion", mock_ingest):
+    with patch.object(mod.run_intraday_quote_batch_task, "fn", mock_ingest):
         with patch("sys.argv", ["run_b3_quote_batch.py", "--instruments", str(instruments_csv)]):
             with patch("sys.exit") as mock_exit:
                 mod.main()
@@ -60,7 +60,7 @@ def test_run_b3_quote_batch_main_filter_mode_fallback(tmp_path):
     instruments_csv.write_text("Instrumento financeiro;Ativo\nPETR4;PETR", encoding="utf-8")
     mod = _load_quote_batch_module()
     mock_ingest = MagicMock(return_value=tmp_path / "report.csv")
-    with patch.object(mod, "run_batch_quote_ingestion", mock_ingest):
+    with patch.object(mod.run_intraday_quote_batch_task, "fn", mock_ingest):
         with patch(
             "sys.argv",
             ["run_b3_quote_batch.py", "--instruments", str(instruments_csv), "--filter-mode", "fallback"],
