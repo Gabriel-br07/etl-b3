@@ -5,20 +5,17 @@
 # Architecture: TWO core services + ONE optional API service.
 #
 #   db         — TimescaleDB (PostgreSQL 16) with persistent named volume
-#   scheduler  — unified orchestrator that drives the full pipeline:
-#                  1. entrypoint.sh (root): fixes /app/data ownership → drops to scraper
-#                  2. run_b3_scraper.py         (BoletimDiarioScraper, Playwright)
-#                  3. run_b3_scraper_negocios.py (NegociosConsolidadosScraper, Playwright)
-#                  4. validate CSV              (cadastro_instrumentos_YYYYMMDD.normalized.csv)
-#                  5. load instruments + trades into DB  (dim_assets, fact_daily_trades)
-#                  6. loop every 30 min         (run_b3_quote_batch.py → fact_quotes)
+#   scheduler  — Prefect-first ETL orchestration (canonical runtime):
+#                  ENTRYPOINT entrypoint.sh → CMD: python -m app.etl.orchestration.prefect.serve
+#                  Serves daily_scraping_flow (+ cotahist-on-demand). See docs/etl_canonical_runtime.md
+#                  Manual: run_prefect_daily_flow.py, run_etl.py, legacy docker/scheduler.py (docs/legacy_scheduler.md)
 #   api        — FastAPI HTTP API (optional — enable with --profile api)
 #                  Scalar docs at http://localhost:8000/scalar
 #
 # Startup sequence:
 #   db starts → healthcheck passes → scheduler (and optionally api) start
 #   ENTRYPOINT entrypoint.sh  (runs as root – chowns /app/data → exec scraper)
-#   CMD        scheduler.py   (runs as scraper uid 1001)
+#   CMD        Prefect serve (see Dockerfile command; runs as scraper uid 1001)
 #
 # Quick start:
 #   docker compose build
@@ -111,13 +108,11 @@ services:
       DB_POOL_RECYCLE: "1800"
       # Logging
       LOG_LEVEL: INFO
-      # Auto-run migrations on startup (set to "false" to skip)
-      RUN_MIGRATIONS_ON_STARTUP: "true"
     shm_size: "1gb"
     volumes:
       - scraper_data:/app/data
-    # Explicit command: start the scheduler script inside the virtualenv
-    command: ["/app/.venv/bin/python", "/app/docker/scheduler.py"]
+    # Prefect-first command: serve daily/cotahist deployments
+    command: ["/app/.venv/bin/python", "-m", "app.etl.orchestration.prefect.serve"]
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------

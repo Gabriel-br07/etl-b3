@@ -52,8 +52,6 @@ source = ["app", "docker", "scripts"]
 omit = [
     "*/tests/*",
     "*/__pycache__/*",
-    "app/etl/orchestration/flow.py",
-    "app/scraping/site2/*",
 ]
 branch = true
 

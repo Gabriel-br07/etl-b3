@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from app.core.config import B3_COTAHIST_ANNUAL_DIR_DEFAULT
 
@@ -43,7 +44,7 @@ def test_run_b3_quote_batch_main_explicit_instruments_calls_ingestion(tmp_path):
     report_path = tmp_path / "report.csv"
     mod = _load_quote_batch_module()
     mock_ingest = MagicMock(return_value=report_path)
-    with patch.object(mod, "run_batch_quote_ingestion", mock_ingest):
+    with patch.object(mod.run_intraday_quote_batch_task, "fn", mock_ingest):
         with patch("sys.argv", ["run_b3_quote_batch.py", "--instruments", str(instruments_csv)]):
             with patch("sys.exit") as mock_exit:
                 mod.main()
@@ -60,7 +61,7 @@ def test_run_b3_quote_batch_main_filter_mode_fallback(tmp_path):
     instruments_csv.write_text("Instrumento financeiro;Ativo\nPETR4;PETR", encoding="utf-8")
     mod = _load_quote_batch_module()
     mock_ingest = MagicMock(return_value=tmp_path / "report.csv")
-    with patch.object(mod, "run_batch_quote_ingestion", mock_ingest):
+    with patch.object(mod.run_intraday_quote_batch_task, "fn", mock_ingest):
         with patch(
             "sys.argv",
             ["run_b3_quote_batch.py", "--instruments", str(instruments_csv), "--filter-mode", "fallback"],
@@ -81,6 +82,49 @@ def test_run_b3_quote_batch_main_exits_when_instruments_not_found(tmp_path):
             with pytest.raises(SystemExit):
                 mod.main()
     mock_exit.assert_called_once_with(1)
+
+
+def test_run_b3_quote_batch_main_falls_back_when_audit_db_unavailable(tmp_path):
+    """When audit insert fails with a DB connectivity error, ingestion runs once without audit."""
+    instruments_csv = tmp_path / "instruments.csv"
+    instruments_csv.write_text("Instrumento financeiro;Ativo\nPETR4;PETR", encoding="utf-8")
+    report_path = tmp_path / "report.csv"
+    mod = _load_quote_batch_module()
+
+    with patch(
+        "app.etl.orchestration.prefect.tasks.scraping_tasks.start_scraper_audit",
+        side_effect=OperationalError("INSERT", {}, Exception("connection refused")),
+    ), patch(
+        "app.etl.orchestration.prefect.tasks.scraping_tasks.run_batch_quote_ingestion",
+        return_value=report_path,
+    ) as mock_ingest, patch("sys.argv", ["run_b3_quote_batch.py", "--instruments", str(instruments_csv)]), patch(
+        "sys.exit"
+    ) as mock_exit:
+        mod.main()
+
+    mock_ingest.assert_called_once()
+    mock_exit.assert_not_called()
+
+
+def test_run_b3_quote_batch_main_does_not_retry_ingestion_on_use_case_failure(tmp_path):
+    """Ingestion failures must not trigger a second run_batch_quote_ingestion call."""
+    instruments_csv = tmp_path / "instruments.csv"
+    instruments_csv.write_text("Instrumento financeiro;Ativo\nPETR4;PETR", encoding="utf-8")
+    mod = _load_quote_batch_module()
+
+    with patch(
+        "app.etl.orchestration.prefect.tasks.scraping_tasks.start_scraper_audit",
+        return_value=1,
+    ), patch(
+        "app.etl.orchestration.prefect.tasks.scraping_tasks.finish_scraper_audit",
+    ), patch(
+        "app.etl.orchestration.prefect.tasks.scraping_tasks.run_batch_quote_ingestion",
+        side_effect=RuntimeError("B3 API unavailable"),
+    ) as mock_ingest, patch("sys.argv", ["run_b3_quote_batch.py", "--instruments", str(instruments_csv)]):
+        with pytest.raises(RuntimeError, match="B3 API unavailable"):
+            mod.main()
+
+    mock_ingest.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
