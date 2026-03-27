@@ -34,6 +34,7 @@ from app.scraping.b3.downloader import (
 from app.scraping.b3.selectors import B3Selectors
 from app.scraping.common.base import BaseScraper, ScrapeResult
 from app.scraping.common.browser import build_browser_context
+from app.scraping.common.adaptive_wait import run_with_adaptive_wait
 from app.scraping.common.exceptions import ElementNotFoundError, NavigationError
 from app.scraping.common.storage import daily_output_dir, screenshots_dir
 
@@ -288,7 +289,13 @@ class NegociosConsolidadosScraper(BaseScraper):
     def _safe_click(self, page, locator, description: str, ss_dir: Path) -> None:
         """Click *locator*, raising :class:`ElementNotFoundError` if not found."""
         self._assert_visible(locator, description, page, ss_dir)
-        locator.click()
+        run_with_adaptive_wait(
+            action_label=f"click:{description}",
+            action=lambda timeout_ms: locator.click(timeout=timeout_ms),
+            base_timeout_ms=int(settings.playwright_timeout_ms),
+            max_attempts=3,
+            scraper_name=self.site_name,
+        )
 
     def _assert_visible(self, locator, description: str, page, ss_dir: Path) -> None:
         """Assert *locator* is visible; capture screenshot and raise if not."""
