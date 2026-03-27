@@ -234,8 +234,7 @@ def main() -> None:
                 instruments_path,
             )
 
-    # Thin wrapper mode: delegate execution to the Prefect-owned task function.
-    # We call .fn to execute the underlying function without requiring a flow context.
+    # Shared Prefect task path (audit unavailable → no-audit fallback lives in the task).
     report_path = run_intraday_quote_batch_task.fn(
         instruments_csv=instruments_path,
         trades_csv=trades_path,

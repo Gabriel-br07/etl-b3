@@ -10,6 +10,7 @@ from pathlib import Path
 from prefect import get_run_logger, task
 from prefect.exceptions import MissingContextError
 from prefect.runtime import task_run
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -32,6 +33,11 @@ def _run_logger_or_app() -> logging.Logger | logging.LoggerAdapter[logging.Logge
         return get_run_logger()
     except MissingContextError:
         return get_logger(__name__)
+
+
+def _is_audit_db_unavailable(exc: BaseException) -> bool:
+    """True when scraper audit rows cannot be persisted (e.g. DB down)."""
+    return isinstance(exc, (OperationalError, InterfaceError))
 
 
 @task(name="scrape-cadastro", retries=2, retry_delay_seconds=[30, 60])
@@ -185,12 +191,31 @@ def run_intraday_quote_batch_task(
     """Execute quote batch use-case and return generated report path."""
     logger = _run_logger_or_app()
     retry_count = _current_retry_count()
-    audit_id = start_scraper_audit(
-        scraper_name="daily_fluctuation_history",
-        target_date=target_date,
-        retry_count=retry_count,
-        status="retrying" if retry_count > 0 else "running",
-    )
+    audit_id: int | None = None
+    try:
+        audit_id = start_scraper_audit(
+            scraper_name="daily_fluctuation_history",
+            target_date=target_date,
+            retry_count=retry_count,
+            status="retrying" if retry_count > 0 else "running",
+        )
+    except Exception as audit_exc:  # noqa: BLE001
+        if _is_audit_db_unavailable(audit_exc):
+            logger.warning(
+                "scraper audit unavailable (DB); running quote batch without audit: %s",
+                audit_exc,
+            )
+            report = run_batch_quote_ingestion(
+                instruments_csv=instruments_csv,
+                trades_csv=trades_csv,
+                filter_mode=filter_mode,
+                reference_date=target_date,
+                output_dir=output_dir,
+            )
+            logger.info("intraday quote batch done (no audit): report=%s", report)
+            return report
+        raise
+
     try:
         report = run_batch_quote_ingestion(
             instruments_csv=instruments_csv,
