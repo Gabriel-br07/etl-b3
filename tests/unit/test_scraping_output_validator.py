@@ -62,3 +62,26 @@ def test_validate_scraped_csv_missing_column(tmp_path: Path):
             required_columns={"ticker", "trade_date"},
             key_columns=["ticker", "trade_date"],
         )
+
+
+def test_validate_scraped_csv_negocios_allows_repeated_ticker_when_uniqueness_disabled(
+    tmp_path: Path,
+):
+    """Trades-like files may repeat ticker rows and should not fail early validation."""
+    p = tmp_path / "negocios.csv"
+    p.write_text(
+        "Instrumento financeiro;Data do Negocio\n"
+        "PETR4;2026-03-26\n"
+        "PETR4;2026-03-26\n"
+        "VALE3;2026-03-26\n",
+        encoding="utf-8",
+    )
+    result = validate_scraped_csv(
+        path=p,
+        required_columns={"Instrumento financeiro"},
+        key_columns=["Instrumento financeiro"],
+        min_rows=1,
+        enforce_unique_keys=False,
+    )
+    assert result.ok is True
+    assert result.rows == 3

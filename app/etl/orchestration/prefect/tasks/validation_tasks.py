@@ -32,6 +32,7 @@ def validate_outputs_task(
         required_columns={_NEGOCIOS_TICKER_COL},
         key_columns=[_NEGOCIOS_TICKER_COL],
         min_rows=1,
+        enforce_unique_keys=False,
     )
     return {
         "cadastro_rows": cadastro.rows,

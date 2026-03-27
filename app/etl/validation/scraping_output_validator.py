@@ -48,6 +48,7 @@ def validate_scraped_csv(
     key_columns: list[str],
     min_rows: int = 1,
     max_rows: int | None = None,
+    enforce_unique_keys: bool = True,
 ) -> ValidationResult:
     """Validate CSV existence/schema/keys and light row-count checks."""
 
@@ -70,8 +71,9 @@ def validate_scraped_csv(
         if len(nulls) > 0:
             raise ValueError(f"Key column '{col}' has null/blank values in {path.name}")
 
-    duplicate_count = len(df) - len(df.unique(subset=key_columns, keep="first"))
-    if duplicate_count > 0:
-        raise ValueError(f"Duplicate key rows found in {path.name} for keys {key_columns}")
+    if enforce_unique_keys:
+        duplicate_count = len(df) - len(df.unique(subset=key_columns, keep="first"))
+        if duplicate_count > 0:
+            raise ValueError(f"Duplicate key rows found in {path.name} for keys {key_columns}")
 
     return ValidationResult(path=path, rows=len(df), ok=True, message="ok")
