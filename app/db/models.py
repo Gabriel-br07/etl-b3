@@ -20,6 +20,7 @@ from sqlalchemy import (
     DateTime,
     Index,
     Integer,
+    JSON,
     Numeric,
     String,
     Text,
@@ -285,5 +286,45 @@ class ETLRun(Base):
     __table_args__ = (
         Index("ix_etl_runs_pipeline_started", "pipeline_name", "started_at"),
         Index("ix_etl_runs_status", "status"),
+    )
+
+
+class ScraperRunAudit(Base):
+    """Audit log for scraper task executions orchestrated by Prefect."""
+
+    __tablename__ = "scraper_run_audit"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    scraper_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    flow_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    output_file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    records_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        Index("ix_scraper_run_audit_name_date_started", "scraper_name", "target_date", "started_at"),
+        Index("ix_scraper_run_audit_status_started", "status", "started_at"),
+        Index("ix_scraper_run_audit_flow_task", "flow_run_id", "task_run_id"),
     )
 
