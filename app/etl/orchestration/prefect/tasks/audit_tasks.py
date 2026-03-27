@@ -6,8 +6,11 @@ from datetime import date
 
 from prefect.runtime import flow_run, task_run
 
+from app.core.logging import get_logger
 from app.db.engine import managed_session
 from app.repositories.scraper_run_audit_repository import ScraperRunAuditRepository
+
+logger = get_logger(__name__)
 
 
 def _flow_task_ids() -> tuple[str | None, str | None]:
@@ -59,6 +62,12 @@ def finish_scraper_audit(
 
         row = db.get(ScraperRunAudit, audit_id)
         if row is None:
+            logger.warning(
+                "finish_scraper_audit: missing audit row for id=%s status=%s retry_count=%s",
+                audit_id,
+                status,
+                retry_count,
+            )
             return
         repo = ScraperRunAuditRepository(db)
         repo.finish(
