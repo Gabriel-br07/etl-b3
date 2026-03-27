@@ -1,4 +1,7 @@
-"""Entrypoint tests for docker/scheduler.py.
+"""Entrypoint tests for docker/scheduler.py (legacy stack; non-default CMD).
+
+Canonical runtime is Prefect — see docs/legacy_scheduler.md. These tests keep
+contract coverage for the optional scheduler + run_daily_batch.sh path.
 
 Tests focus on the scheduler orchestrator and its helpers with full mocking:
 no real DB, subprocess, or filesystem (except where using tmp_path).

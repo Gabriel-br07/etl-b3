@@ -7,9 +7,9 @@
 #  - Emit clear logs and return non-zero exit code if any scraper fails
 #  - Retry each scraper individually on transient failures
 #
-# NOTE: ETL invocation (discovery + load) has been intentionally removed from
-# this script. `docker/scheduler.py` is the authoritative orchestrator and
-# will run `scripts/run_etl.py` after verifying CSV availability.
+# NOTE: ETL invocation (discovery + load) is not in this script. Default
+# production orchestration is Prefect (docs/etl_canonical_runtime.md). Legacy
+# `docker/scheduler.py` may invoke this script; see docs/legacy_scheduler.md.
 # =============================================================================
 set -euo pipefail
 IFS=$'\n\t'

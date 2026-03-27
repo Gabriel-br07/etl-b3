@@ -3,6 +3,11 @@
 docker/scheduler.py — unified ETL pipeline orchestrator
 =========================================================
 
+**LEGACY / NON-DEFAULT.** Default Docker/Compose CMD is Prefect serve
+(`python -m app.etl.orchestration.prefect.serve`). This module is kept for
+manual runs, tests, and operators who want DB-wait + Alembic + shell-based
+scrapers in one process. See ``docs/legacy_scheduler.md``.
+
 Reworked scheduling logic (2026-03):
 - Run daily scrapers once immediately on startup
 - Run intraday quotes immediately on startup
