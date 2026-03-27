@@ -9,9 +9,9 @@
 # 3. Print startup diagnostics (user, home, prefect dirs)
 # 4. Exec CMD as scraper (uid 1001) via setpriv
 #
-# NOTE: Default runtime is Prefect serve (see Dockerfile CMD). DB wait and
-# Alembic are NOT run here; run migrations manually or use the legacy
-# docker/scheduler.py path (docs/legacy_scheduler.md).
+# NOTE: Default runtime is Prefect serve (see Dockerfile CMD). Before starting
+# the runtime, this entrypoint runs `alembic upgrade head` against the ready DB.
+# Compose enforces DB health readiness before this container starts.
 # =============================================================================
 set -e
 
@@ -104,11 +104,14 @@ echo "[entrypoint] /root/.prefect    : $(ls -la /root/.prefect 2>/dev/null || ec
 echo "[entrypoint] --- end diagnostics ---"
 
 # ---------------------------------------------------------------------------
-# NOTE: Database readiness and migrations are not run in entrypoint.
-# With Prefect serve as default CMD, run `alembic upgrade head` as needed
-# (e.g. docker compose exec). Legacy docker/scheduler.py still performs
-# wait-for-db + migrations when that script is used instead of Prefect.
+# Run migrations before starting the main runtime process.
+# Database readiness is enforced by compose `depends_on: condition: service_healthy`.
 # ---------------------------------------------------------------------------
+echo "[entrypoint] running migrations: alembic upgrade head"
+if ! /app/.venv/bin/alembic upgrade head; then
+    echo "[entrypoint] ERROR: migration step failed; refusing to start runtime." >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Drop to scraper and exec CMD

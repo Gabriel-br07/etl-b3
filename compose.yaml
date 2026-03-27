@@ -108,8 +108,6 @@ services:
       DB_POOL_RECYCLE: "1800"
       # Logging
       LOG_LEVEL: INFO
-      # Auto-run migrations on startup (set to "false" to skip)
-      RUN_MIGRATIONS_ON_STARTUP: "true"
     shm_size: "1gb"
     volumes:
       - scraper_data:/app/data
