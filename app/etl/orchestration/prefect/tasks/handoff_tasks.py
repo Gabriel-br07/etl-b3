@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+import re
 
 from prefect import task
 
@@ -16,11 +17,14 @@ from app.etl.orchestration.pipeline import (
 
 
 def _resolve_latest_jsonl_from_report(report_path: Path) -> Path:
-    folder = report_path.parent
-    candidates = sorted(folder.glob("daily_fluctuation_*.jsonl"))
-    if not candidates:
-        raise FileNotFoundError(f"No daily_fluctuation JSONL found in {folder}")
-    return candidates[-1]
+    m = re.match(r"report_(\d{8}T\d{6})\.csv$", report_path.name)
+    if m is None:
+        raise FileNotFoundError(f"Cannot derive JSONL artifact from report name: {report_path.name}")
+    timestamp = m.group(1)
+    jsonl_path = report_path.parent / f"daily_fluctuation_{timestamp}.jsonl"
+    if not jsonl_path.exists():
+        raise FileNotFoundError(f"JSONL artifact not found for report {report_path.name}: {jsonl_path}")
+    return jsonl_path
 
 
 @task(name="trigger-transform-load-handoff", retries=1, retry_delay_seconds=30)
