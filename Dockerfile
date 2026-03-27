@@ -137,8 +137,8 @@ RUN /app/.venv/bin/python -m playwright install chromium
 
 # ---------------------------------------------------------------------------
 # Entrypoint: runs as root → fixes volume ownership → exec as scraper
-# CMD: the scheduler (passed to entrypoint as "$@")
+# CMD: Prefect serve (canonical ETL runtime; see docs/etl_canonical_runtime.md)
 # ---------------------------------------------------------------------------
 USER root
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["/app/.venv/bin/python", "/app/docker/scheduler.py"]
+CMD ["/app/.venv/bin/python", "-m", "app.etl.orchestration.prefect.serve"]

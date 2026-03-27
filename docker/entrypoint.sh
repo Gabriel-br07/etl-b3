@@ -9,10 +9,9 @@
 # 3. Print startup diagnostics (user, home, prefect dirs)
 # 4. Exec CMD as scraper (uid 1001) via setpriv
 #
-# NOTE: Long-running tasks such as waiting for the database or running
-# migrations are intentionally moved to `docker/scheduler.py` to provide a
-# single authoritative orchestrator and avoid duplicate work across
-# entrypoint and scheduler.
+# NOTE: Default runtime is Prefect serve (see Dockerfile CMD). DB wait and
+# Alembic are NOT run here; run migrations manually or use the legacy
+# docker/scheduler.py path (docs/legacy_scheduler.md).
 # =============================================================================
 set -e
 
@@ -105,10 +104,10 @@ echo "[entrypoint] /root/.prefect    : $(ls -la /root/.prefect 2>/dev/null || ec
 echo "[entrypoint] --- end diagnostics ---"
 
 # ---------------------------------------------------------------------------
-# NOTE: Database readiness and migrations intentionally removed from entrypoint
-# The scheduler (docker/scheduler.py) is the single place responsible for
-# waiting for the DB and running Alembic migrations. This avoids duplicate
-# work and prevents the entrypoint from performing long blocking operations.
+# NOTE: Database readiness and migrations are not run in entrypoint.
+# With Prefect serve as default CMD, run `alembic upgrade head` as needed
+# (e.g. docker compose exec). Legacy docker/scheduler.py still performs
+# wait-for-db + migrations when that script is used instead of Prefect.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
