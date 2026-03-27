@@ -1,13 +1,16 @@
 """app/etl/orchestration package.
 
-Prefect-based flows are imported lazily to avoid triggering Prefect
-initialization (which reads ~/.prefect/profiles.toml) when only lightweight
-helpers such as csv_resolver are needed.
+Prefect-based flows live under ``app.etl.orchestration.prefect`` and are imported
+lazily from there (not from this package root) to avoid triggering Prefect
+initialization when only lightweight helpers such as ``csv_resolver`` are needed.
 
-To use the Prefect flow, import it directly:
-    from app.etl.orchestration.flow import run_daily_b3_etl
+Canonical runtime::
+
+    from app.etl.orchestration.prefect.flows.daily_scraping_flow import daily_scraping_flow
+
+See ``docs/etl_canonical_runtime.md``.
 """
-# Intentionally empty — do NOT add eager imports of flow.py here.
+# Intentionally empty — do NOT add eager imports of Prefect modules here.
 # Any module that imports app.etl.orchestration.csv_resolver would otherwise
 # trigger `from prefect import ...` and crash in non-root containers where
 # HOME=/root is not writable.
