@@ -34,9 +34,12 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
+from sqlalchemy import text
+
 from app.core.constants import ETLStatus
 from app.db.engine import managed_session
 from app.etl.loaders.db_loader import load_assets, load_daily_quotes, load_intraday_quotes, load_trades
+from app.etl.orchestration.cotahist_adaptive_strategy import orchestrate_adaptive_cotahist_load
 from app.etl.parsers.instruments_parser import parse_instruments_csv
 from app.etl.parsers.jsonl_quotes_parser import parse_jsonl_quotes
 from app.etl.parsers.trades_parser import parse_trades_file
@@ -611,16 +614,28 @@ def run_cotahist_annual_pipeline(
             run_id = run.id
 
     rows_touched = 0
-    ingest_summary = None
+    ingest_metrics: dict[str, int] = {}
 
     try:
         with managed_session() as db:
-            ingest_summary = ingest_cotahist_txt_file(
-                db,
-                txt_path,
-                track_in_file_duplicates=track_in_file_duplicates,
+            file_size_bytes = txt_path.stat().st_size
+            fact_empty_at_start = bool(
+                db.execute(text("SELECT NOT EXISTS (SELECT 1 FROM fact_cotahist_daily)")).scalar_one()
             )
-            rows_touched = ingest_summary.db_upsert_operations
+            adaptive_out = orchestrate_adaptive_cotahist_load(
+                db=db,
+                txt_path=txt_path,
+                file_size_bytes=file_size_bytes,
+                fact_empty_at_start=fact_empty_at_start,
+                # Duplicate knowledge is unavailable before ingest in this
+                # pipeline. Use a safe value to prevent optimistic fast-path
+                # selection until a dedicated precheck exists.
+                has_dupes=True,
+                track_in_file_duplicates=track_in_file_duplicates,
+                logger=logger,
+            )
+            ingest_metrics = adaptive_out.get("final_metrics", {})
+            rows_touched = int(ingest_metrics.get("rows_upsert_ops", 0))
     except Exception as exc:
         logger.exception("[etl_pipeline] COTAHIST annual load FAILED: %s", exc)
         if record_audit and run_id is not None:
@@ -652,13 +667,13 @@ def run_cotahist_annual_pipeline(
             "rows_upsert_ops": rows_touched,
         }
 
-    if ingest_summary:
+    if ingest_metrics:
         logger.info(
             "[etl_pipeline] COTAHIST stats file=%s valid=%s invalid=%s dup_keys=%s rows_upsert_ops=%s",
             txt_path.name,
-            ingest_summary.normalized_valid,
-            ingest_summary.normalized_invalid,
-            ingest_summary.in_file_duplicate_keys,
+            ingest_metrics.get("normalized_valid", 0),
+            ingest_metrics.get("normalized_invalid", 0),
+            ingest_metrics.get("in_file_duplicate_keys", 0),
             rows_touched,
         )
 
@@ -684,9 +699,9 @@ def run_cotahist_annual_pipeline(
         "source_file": txt_path.name,
         "status": ETLStatus.SUCCESS,
         "rows_upsert_ops": rows_touched,
-        "normalized_valid": ingest_summary.normalized_valid if ingest_summary else 0,
-        "normalized_invalid": ingest_summary.normalized_invalid if ingest_summary else 0,
-        "in_file_duplicate_keys": ingest_summary.in_file_duplicate_keys if ingest_summary else 0,
+        "normalized_valid": ingest_metrics.get("normalized_valid", 0),
+        "normalized_invalid": ingest_metrics.get("normalized_invalid", 0),
+        "in_file_duplicate_keys": ingest_metrics.get("in_file_duplicate_keys", 0),
     }
     logger.info("[etl_pipeline] COTAHIST annual load done: %s", summary)
     return summary
