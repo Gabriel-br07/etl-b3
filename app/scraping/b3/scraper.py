@@ -35,6 +35,7 @@ from app.scraping.b3.selectors import B3Selectors
 from app.scraping.common.base import BaseScraper, ScrapeResult
 from app.scraping.common.browser import build_browser_context
 from app.scraping.common.adaptive_wait import run_with_adaptive_wait
+from app.scraping.common.cookie_banner import dismiss_cookie_banner_if_present
 from app.scraping.common.exceptions import ElementNotFoundError, NavigationError
 from app.scraping.common.storage import daily_output_dir, screenshots_dir
 
@@ -42,6 +43,7 @@ logger = get_logger(__name__)
 
 #: CSS option value for "Cadastro de instrumentos"
 _INSTRUMENTS_VALUE = TABLE_CONFIG["cadastro_instrumentos"][0]
+_EXPORT_READY_PAUSE_MS = 2_000
 
 
 class BoletimDiarioScraper(BaseScraper):
@@ -157,6 +159,11 @@ class BoletimDiarioScraper(BaseScraper):
             logger.debug("Pausing %sms after opening page to allow content render", pause_after_open)
             page.wait_for_timeout(pause_after_open)
         self._maybe_screenshot(page, ss_dir, "01_page_loaded")
+        dismiss_cookie_banner_if_present(
+            page,
+            scraper_name=self.site_name,
+            step="after_initial_page_load",
+        )
 
         # Step 2 – Click "Renda variável" tab
         logger.info("Clicking 'Renda variável' tab …")
@@ -214,7 +221,8 @@ class BoletimDiarioScraper(BaseScraper):
             page.wait_for_timeout(between)
         self._maybe_screenshot(page, ss_dir, "04_cadastro_selected")
 
-        page.wait_for_timeout(2000)
+        # Keep the same iframe-settle delay contract across bulletin scrapers.
+        page.wait_for_timeout(_EXPORT_READY_PAUSE_MS)
 
         # Click the Export CSV button inside the frame and capture the download
         logger.info("Clicking Exportar CSV button inside iframe …")
@@ -231,13 +239,13 @@ class BoletimDiarioScraper(BaseScraper):
         # expect_download to timeout.
         page.wait_for_timeout(1000)
 
-        # Ensure the CSV button is visible (may be re-rendered inside iframe)
-        try:
-            csv_btn.wait_for(state="visible", timeout=int(settings.playwright_timeout_ms))
-        except Exception:
-            # Fall back to a short sleep and then re-check; let the DownloadError
-            # surface from trigger_csv_export_and_save if it still fails.
-            page.wait_for_timeout(1000)
+        run_with_adaptive_wait(
+            action_label="wait_visible:Exportar CSV button (iframe)",
+            action=lambda timeout_ms: csv_btn.wait_for(state="visible", timeout=timeout_ms),
+            base_timeout_ms=int(settings.playwright_timeout_ms),
+            max_attempts=3,
+            scraper_name=self.site_name,
+        )
 
         # Wait until the button reports enabled, with a bounded loop.
         start = time.time()
