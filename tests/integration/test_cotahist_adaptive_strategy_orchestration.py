@@ -22,8 +22,10 @@ pytestmark = pytest.mark.integration
 
 def test_standard_fast_path_uses_insert_select_single_shot_and_rowcount_metrics() -> None:
     ops = MagicMock()
+    ops.supports_distinct_fast_path = True
+    ops.collect_rowcount_metrics.return_value = {"rows_upsert_ops": 10}
 
-    execute_standard_strategy(
+    out = execute_standard_strategy(
         db=MagicMock(),
         ops=ops,
         fact_empty_at_start=True,
@@ -38,6 +40,9 @@ def test_standard_fast_path_uses_insert_select_single_shot_and_rowcount_metrics(
     ops.metrics_via_duplicate_counting_cte.assert_not_called()
     ops.collect_rowcount_metrics.assert_called_once()
     ops.set_local_synchronous_commit_off.assert_called_once()
+    assert out["execution_path"] == "fast_path"
+    assert out["implementation_mode"] == "specialized"
+    assert out["metrics"] == {"rows_upsert_ops": 10}
 
 
 def test_standard_strategy_fallback_when_fast_path_is_not_eligible() -> None:
