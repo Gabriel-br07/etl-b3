@@ -156,6 +156,12 @@ def resolve_strategy_for_bucket(bucket: SizeBucket) -> StrategyName:
     return bucket
 
 
+def _resolve_support_flag(ops: Any, attr_name: str, *, default: bool) -> bool:
+    """Resolve ops capability that can be a bool or a zero-arg callable."""
+    value = getattr(ops, attr_name, default)
+    return bool(value() if callable(value) else value)
+
+
 def is_standard_fast_path_eligible(*, fact_empty_at_start: bool, has_dupes: bool) -> bool:
     """Eligibility predicate for standard fast path."""
     return fact_empty_at_start and (not has_dupes)
@@ -183,10 +189,11 @@ def execute_standard_strategy(
         fact_empty_at_start=fact_empty_at_start,
         has_dupes=has_dupes,
     )
-    supports_fast_path = True
-    support_attr = getattr(ops, "supports_distinct_fast_path", None)
-    if support_attr is not None:
-        supports_fast_path = bool(support_attr() if callable(support_attr) else support_attr)
+    supports_fast_path = _resolve_support_flag(
+        ops,
+        "supports_distinct_fast_path",
+        default=False,
+    )
 
     if path == "fast_path" and supports_fast_path:
         ops.set_local_synchronous_commit_off()
@@ -229,7 +236,7 @@ def execute_medium_strategy(
         "fallback_used": False,
         "implementation_mode": (
             "specialized"
-            if bool(getattr(ops, "supports_specialized_medium", False))
+            if _resolve_support_flag(ops, "supports_specialized_medium", default=False)
             else "compatible_fallback"
         ),
         "metrics": metrics,
@@ -251,7 +258,7 @@ def execute_large_strategy(*, db: Any, ops: Any) -> dict[str, Any]:
         "fallback_used": False,
         "implementation_mode": (
             "specialized"
-            if bool(getattr(ops, "supports_specialized_large", False))
+            if _resolve_support_flag(ops, "supports_specialized_large", default=False)
             else "compatible_fallback"
         ),
         "metrics": metrics,
