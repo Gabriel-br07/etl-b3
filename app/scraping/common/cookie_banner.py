@@ -82,5 +82,9 @@ def dismiss_cookie_banner_if_present(
         logger.warning("Unexpected cookie banner failure%s: %s", context_suffix, exc)
         raise
     except Exception:
-        logger.warning("Non-Playwright failure while dismissing cookie banner%s", context_suffix)
+        logger.warning(
+            "Non-Playwright failure while dismissing cookie banner%s",
+            context_suffix,
+            exc_info=True,
+        )
         raise
