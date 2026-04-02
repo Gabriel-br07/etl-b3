@@ -9,10 +9,10 @@ from app.scraping.common.adaptive_wait import (
 )
 
 
-def test_adaptive_timeout_ms_grows_by_30_percent():
+def test_adaptive_timeout_ms_grows_by_30_then_50_percent():
     assert adaptive_timeout_ms(1000, 1) == 1000
     assert adaptive_timeout_ms(1000, 2) == 1300
-    assert adaptive_timeout_ms(1000, 3) == 1690
+    assert adaptive_timeout_ms(1000, 3) == 1950
 
 
 def test_is_transient_playwright_error_true_for_timeout():
@@ -37,7 +37,7 @@ def test_run_with_adaptive_wait_retries_then_succeeds():
         scraper_name="b3",
     )
     assert result == "ok"
-    assert calls == [1000, 1300, 1690]
+    assert calls == [1000, 1300, 1950]
 
 
 def test_run_with_adaptive_wait_non_transient_fails_immediately():

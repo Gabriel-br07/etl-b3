@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.constants import ETLStatus
+from app.etl.orchestration.cotahist_adaptive_strategy import orchestrate_adaptive_cotahist_load
 from app.etl.orchestration.pipeline import run_cotahist_historical_pipeline
 from app.use_cases.quotes.cotahist_annual_ingestion import CotahistIngestSummary
 
@@ -149,3 +150,42 @@ def test_historical_pipeline_empty_paths_no_ingest_no_crash(record_audit: bool) 
     ingest.assert_not_called()
     if record_audit:
         RepoCls.assert_not_called()
+
+
+def test_adaptive_orchestration_selects_strategy_from_file_size_bucket() -> None:
+    ops = MagicMock()
+    logger = MagicMock()
+
+    out = orchestrate_adaptive_cotahist_load(
+        db=MagicMock(),
+        txt_path=Path("any/COTAHIST_A2024.TXT"),
+        file_size_bytes=250 * 1024 * 1024,
+        fact_empty_at_start=True,
+        has_dupes=False,
+        ops=ops,
+        logger=logger,
+    )
+
+    assert out["bucket"] == "medium"
+    assert out["selected_strategy"] == "medium"
+
+
+def test_adaptive_orchestration_emits_minimum_observability_fields() -> None:
+    logger = MagicMock()
+    out = orchestrate_adaptive_cotahist_load(
+        db=MagicMock(),
+        txt_path=Path("any/COTAHIST_A2024.TXT"),
+        file_size_bytes=50 * 1024 * 1024,
+        fact_empty_at_start=True,
+        has_dupes=False,
+        ops=MagicMock(),
+        logger=logger,
+    )
+
+    assert logger.info.called
+    observability = out["observability"]
+    assert "file_size_bytes" in observability
+    assert "size_bucket" in observability
+    assert "selected_strategy" in observability
+    assert "standard_fast_path_eligible" in observability
+    assert "final_metrics" in observability

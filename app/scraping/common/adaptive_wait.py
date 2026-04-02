@@ -26,8 +26,16 @@ def is_transient_playwright_error(exc: Exception) -> bool:
 
 
 def adaptive_timeout_ms(base_timeout_ms: int, attempt: int) -> int:
-    """Return timeout increased by 30% per attempt (attempt starts at 1)."""
-    return int(round(base_timeout_ms * (1.3 ** max(0, attempt - 1))))
+    """Return timeout with 30% bump on attempt 2, then 50% on each next attempt."""
+    if attempt <= 1:
+        return int(base_timeout_ms)
+    if attempt == 2:
+        return int(round(base_timeout_ms * 1.3))
+
+    timeout_ms = int(round(base_timeout_ms * 1.3))
+    for _ in range(3, attempt + 1):
+        timeout_ms = int(round(timeout_ms * 1.5))
+    return timeout_ms
 
 
 def run_with_adaptive_wait(
