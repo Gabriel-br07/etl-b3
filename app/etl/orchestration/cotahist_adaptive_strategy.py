@@ -253,12 +253,16 @@ def execute_large_strategy(*, db: Any, ops: Any) -> dict[str, Any]:
     ops.create_indexes_after_load()
     ops.analyze_build_table()
     metrics = ops.promote_ready_table()
+    support_attr = getattr(ops, "supports_specialized_large", False)
+    supports_specialized_large = bool(
+        support_attr() if callable(support_attr) else support_attr
+    )
     return {
         "execution_path": "staged_build_promote",
         "fallback_used": False,
         "implementation_mode": (
             "specialized"
-            if _resolve_support_flag(ops, "supports_specialized_large", default=False)
+            if supports_specialized_large
             else "compatible_fallback"
         ),
         "metrics": metrics,
