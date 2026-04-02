@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 COMPOSE = ROOT / "compose.yaml"
 ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
+COTAHIST_ENTRYPOINT = ROOT / "docker" / "entrypoint_cotahist.sh"
 
 
 def test_compose_scheduler_waits_for_db_health():
@@ -27,3 +28,22 @@ def test_entrypoint_runs_migrations_before_starting_runtime():
     assert content.index(migration_lines[0]) < content.index(
         "setpriv --reuid=1001 --regid=1001 --clear-groups -- \"$@\""
     )
+
+
+def test_compose_cotahist_uses_dedicated_entrypoint():
+    content = COMPOSE.read_text(encoding="utf-8")
+    assert "cotahist:" in content
+    assert 'entrypoint: ["/app/docker/entrypoint_cotahist.sh"]' in content
+
+
+def test_cotahist_entrypoint_does_not_run_alembic():
+    content = COTAHIST_ENTRYPOINT.read_text(encoding="utf-8")
+    assert "alembic upgrade head" not in content
+    assert "setpriv --reuid=1001 --regid=1001 --clear-groups -- \"$@\"" in content
+
+
+def test_scheduler_and_cotahist_share_explicit_image_tag():
+    content = COMPOSE.read_text(encoding="utf-8")
+    assert "scheduler:" in content
+    assert "cotahist:" in content
+    assert "image: etlb3_scheduler:local" in content
