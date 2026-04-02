@@ -155,3 +155,70 @@ def test_default_runtime_reports_compatible_mode_when_fast_path_not_supported(tm
 
     assert out["execution_path"] == "compat_fallback_no_fast_path"
     assert out["implementation_mode"] == "compatible_fallback"
+
+
+def test_medium_strategy_support_flag_callable_is_resolved() -> None:
+    class Ops:
+        def execute_medium_merge(self, **_kwargs):
+            return {"rows_upsert_ops": 1}
+
+        def supports_specialized_medium(self) -> bool:
+            return True
+
+    out = execute_medium_strategy(
+        db=MagicMock(),
+        ops=Ops(),
+        settings=MediumStrategySettings(),
+    )
+    assert out["implementation_mode"] == "specialized"
+
+
+def test_large_strategy_support_flag_callable_is_resolved() -> None:
+    class Ops:
+        def copy_to_staging(self) -> None:
+            return None
+
+        def validate_duplicates_in_staging(self) -> None:
+            return None
+
+        def create_unlogged_build_table(self) -> None:
+            return None
+
+        def bulk_load_build_table(self) -> None:
+            return None
+
+        def create_indexes_after_load(self) -> None:
+            return None
+
+        def analyze_build_table(self) -> None:
+            return None
+
+        def promote_ready_table(self):
+            return {"rows_upsert_ops": 1}
+
+        def supports_specialized_large(self) -> bool:
+            return True
+
+    out = execute_large_strategy(db=MagicMock(), ops=Ops())
+    assert out["implementation_mode"] == "specialized"
+
+
+def test_standard_without_support_flag_defaults_to_safe_fallback() -> None:
+    class Ops:
+        def __init__(self) -> None:
+            self.fallback_calls = 0
+
+        def execute_standard_fallback(self):
+            self.fallback_calls += 1
+            return {"rows_upsert_ops": 1}
+
+    ops = Ops()
+    out = execute_standard_strategy(
+        db=MagicMock(),
+        ops=ops,
+        fact_empty_at_start=True,
+        has_dupes=False,
+    )
+
+    assert ops.fallback_calls == 1
+    assert out["execution_path"] == "compat_fallback_no_fast_path"
