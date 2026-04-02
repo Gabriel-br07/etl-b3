@@ -240,13 +240,6 @@ class NegociosConsolidadosScraper(BaseScraper):
         # Click the Export CSV button inside the frame and capture the download
         logger.info("Clicking Exportar CSV button inside iframe …")
         csv_btn = frame.get_by_role("button", name="Exportar CSV")
-        run_with_adaptive_wait(
-            action_label="wait_visible:Exportar CSV button (iframe)",
-            action=lambda timeout_ms: csv_btn.wait_for(state="visible", timeout=timeout_ms),
-            base_timeout_ms=int(settings.playwright_timeout_ms),
-            max_attempts=3,
-            scraper_name=self.site_name,
-        )
         self._assert_visible(csv_btn, "Exportar CSV button (iframe)", page, ss_dir)
 
         # Wait 1 second to ensure the UI inside the iframe has settled before clicking
@@ -258,6 +251,14 @@ class NegociosConsolidadosScraper(BaseScraper):
         # preparing the file; these checks reduce race conditions that cause
         # expect_download to timeout.
         page.wait_for_timeout(1000)
+
+        run_with_adaptive_wait(
+            action_label="wait_visible:Exportar CSV button (iframe)",
+            action=lambda timeout_ms: csv_btn.wait_for(state="visible", timeout=timeout_ms),
+            base_timeout_ms=int(settings.playwright_timeout_ms),
+            max_attempts=3,
+            scraper_name=self.site_name,
+        )
 
         # Wait until the button reports enabled, with a bounded loop.
         start = time.time()
