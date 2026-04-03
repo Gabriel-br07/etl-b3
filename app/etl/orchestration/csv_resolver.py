@@ -4,8 +4,8 @@ app/etl/orchestration/csv_resolver.py
 Instruments CSV resolver with retry and yesterday-fallback logic.
 
 Used by:
-  - docker/scheduler.py (standalone container)
-  - scripts/run_b3_quote_batch.py (can import for auto-discovery)
+  - scripts/run_b3_quote_batch.py (auto-discovery)
+  - Prefect intraday flows
 
 Resolution order (per attempt):
   1. Today's cadastro_instrumentos_YYYYMMDD.normalized.csv
@@ -28,6 +28,7 @@ Usage
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -66,6 +67,25 @@ def find_csv_for_date(data_dir: Path, target: date) -> Path | None:
             log.debug("Glob match: %s", candidates[-1])
             return candidates[-1]
 
+    return None
+
+
+def find_negocios_sibling(instruments_path: Path) -> Path | None:
+    """Locate ``negocios_consolidados_*.normalized.csv`` beside the instruments CSV.
+
+    Strategy matches ``scripts/run_b3_quote_batch.py``: exact date tag from the
+    cadastro filename, then glob fallback (alphabetically last).
+    """
+    folder = instruments_path.parent
+    m = re.search(r"(\d{8})", instruments_path.stem)
+    if m:
+        date_tag = m.group(1)
+        candidate = folder / f"negocios_consolidados_{date_tag}.normalized.csv"
+        if candidate.exists():
+            return candidate
+    siblings = sorted(folder.glob("negocios_consolidados_*.normalized.csv"))
+    if siblings:
+        return siblings[-1]
     return None
 
 

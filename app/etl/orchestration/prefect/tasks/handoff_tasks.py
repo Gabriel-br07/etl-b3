@@ -27,6 +27,48 @@ def _resolve_latest_jsonl_from_report(report_path: Path) -> Path:
     return jsonl_path
 
 
+def run_registry_handoff_impl(
+    *,
+    target_date: date,
+    cadastro_csv: Path,
+    negocios_csv: Path,
+) -> dict:
+    """Instruments+trades and daily quotes loads (no intraday, no cotahist)."""
+    result_main = run_instruments_and_trades_pipeline(cadastro_csv, negocios_csv, target_date)
+    result_daily = run_daily_quotes_pipeline(negocios_csv, target_date)
+    return {
+        "instruments_trades": result_main,
+        "daily_quotes": result_daily,
+    }
+
+
+def run_intraday_handoff_impl(intraday_report_path: Path) -> dict:
+    jsonl_path = _resolve_latest_jsonl_from_report(intraday_report_path)
+    result_intraday = run_intraday_quotes_pipeline(jsonl_path)
+    return {"intraday_quotes": result_intraday}
+
+
+@task(name="handoff-registry-loads", retries=1, retry_delay_seconds=30)
+def handoff_registry_loads_task(
+    *,
+    target_date: date,
+    cadastro_csv: Path,
+    negocios_csv: Path,
+) -> dict:
+    """Load cadastro + negócios artifacts into core tables and daily quotes."""
+    return run_registry_handoff_impl(
+        target_date=target_date,
+        cadastro_csv=cadastro_csv,
+        negocios_csv=negocios_csv,
+    )
+
+
+@task(name="handoff-intraday-loads", retries=1, retry_delay_seconds=30)
+def handoff_intraday_load_task(*, intraday_report_path: Path) -> dict:
+    """Load intraday JSONL produced by the quote batch (report CSV path as anchor)."""
+    return run_intraday_handoff_impl(intraday_report_path)
+
+
 @task(name="trigger-transform-load-handoff", retries=1, retry_delay_seconds=30)
 def trigger_transform_load_task(
     *,
@@ -36,19 +78,18 @@ def trigger_transform_load_task(
     intraday_report_path: Path | None = None,
     cotahist_txt_paths: list[Path] | None = None,
 ) -> dict:
-    """Run downstream ETL entrypoints after scraper validation."""
-    result_main = run_instruments_and_trades_pipeline(cadastro_csv, negocios_csv, target_date)
-    result_daily = run_daily_quotes_pipeline(negocios_csv, target_date)
-    result_intraday = None
+    """Run downstream ETL entrypoints after scraper validation (combined path)."""
+    out: dict = run_registry_handoff_impl(
+        target_date=target_date,
+        cadastro_csv=cadastro_csv,
+        negocios_csv=negocios_csv,
+    )
     if intraday_report_path is not None:
-        jsonl_path = _resolve_latest_jsonl_from_report(intraday_report_path)
-        result_intraday = run_intraday_quotes_pipeline(jsonl_path)
+        out.update(run_intraday_handoff_impl(intraday_report_path))
+    else:
+        out["intraday_quotes"] = None
     result_cotahist = None
     if cotahist_txt_paths:
         result_cotahist = run_cotahist_historical_pipeline(cotahist_txt_paths, record_audit=True)
-    return {
-        "instruments_trades": result_main,
-        "daily_quotes": result_daily,
-        "intraday_quotes": result_intraday,
-        "cotahist": result_cotahist,
-    }
+    out["cotahist"] = result_cotahist
+    return out
