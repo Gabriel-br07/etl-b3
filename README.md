@@ -17,23 +17,23 @@ Short, focused documentation for getting the project running locally or with Doc
 
 ## Architecture
 
-Default runtime (local + Docker): **Prefect** serves `daily_scraping_flow` (scrapers → validation → optional intraday quote batch → `pipeline.py` loads). See [`docs/etl_canonical_runtime.md`](docs/etl_canonical_runtime.md).
+Default runtime (local + Docker): **Prefect** serves **`daily-registry`** (08:00 America/Sao_Paulo cadastro + negócios + registry loads) and **`intraday-quotes`** (30-minute interval; no-ops outside the configured B3 quote window). Manual one-shots and legacy combined flow use `daily_scraping_flow` / `lightweight_bootstrap_flow`. See [`docs/etl_canonical_runtime.md`](docs/etl_canonical_runtime.md).
 
 ```
 Prefect (scripts/run_prefect_daily_flow.py OR python -m app.etl.orchestration.prefect.serve)
   |
-  +--> scrape cadastro + negocios (+ optional COTAHIST year download)
-  |      BoletimDiarioScraper / NegociosConsolidadosScraper -> *.normalized.csv
+  +--> daily_registry_flow: scrape cadastro + negocios -> validate -> registry handoff
+  |      (BoletimDiarioScraper / NegociosConsolidadosScraper -> *.normalized.csv)
   |
-  +--> validate_outputs_task (scraping_output_validator)
+  +--> intraday_quotes_flow: resolve latest CSVs -> quote batch -> intraday handoff
+  |      (skips outside B3 window; see app/etl/orchestration/market_hours.py)
   |
-  +--> optional: intraday quote batch -> JSONL + report CSV
-  |
-  +--> pipeline.py
+  +--> pipeline.py (via handoff tasks)
          run_instruments_and_trades_pipeline -> dim_assets, fact_daily_trades
          run_daily_quotes_pipeline          -> fact_daily_quotes
          run_intraday_quotes_pipeline       -> fact_quotes (hypertable)
-         run_cotahist_historical_pipeline   -> fact_cotahist_daily (optional)
+
+Heavy / full data stack (e.g. annual COTAHIST): Compose profile `full` — separate worker, not default Prefect deployments.
 
 ETL audit trail: etl_runs (+ scraper_run_audit for Prefect tasks). Legacy optional loop: docs/legacy_scheduler.md.
 API layer (FastAPI): /assets, /quotes, /trades, /fact-quotes, /health, /etl
@@ -273,20 +273,21 @@ GET /fact-quotes/PETR4/days/2024-06-14
 │       ├── 0001_initial_schema.py   # dim_assets, fact_daily_quotes, etl_runs
 │       └── 0002_schema_v2.py        # fact_daily_trades, fact_quotes (hypertable),
 │                                    # enrich etl_runs, add asset_id FKs
+├── docs/                # etl_canonical_runtime.md, legacy_scheduler.md (runtime contract)
 ├── docker/
-│   ├── entrypoint.sh        # root bootstrap: fix permissions, drop to scraper
-│   ├── run_daily_batch.sh   # runs both daily Playwright scrapers
-│   ├── scheduler.py         # LEGACY optional loop (docs/legacy_scheduler.md); not default CMD
+│   ├── entrypoint.sh        # migrations, optional Prefect bootstrap, drop to scraper
+│   ├── run_daily_batch.sh   # runs both daily Playwright scrapers (legacy helper)
 │   └── initdb/
 │       └── 01_timescaledb.sql  # CREATE EXTENSION timescaledb (auto-run by Postgres)
-├── scripts/             # CLI scripts: run_etl.py, run_b3_scraper.py, run_b3_quote_batch.py
+├── scripts/             # run_etl.py, run_prefect_daily_flow.py, run_b3_quote_batch.py, …
+│   └── legacy_scheduler.py  # LEGACY loop — see docs/legacy_scheduler.md (not default CMD)
 ├── tests/               # pytest: unit/, integration/, e2e/, fixtures/, conftest.py
 ├── .github/workflows/   # GitHub Actions: ci.yml (ruff, ty, pytest)
 ├── .pre-commit-config.yaml  # ruff + ty on git commit (after pre-commit install)
 ├── CONTRIBUTING.md      # hooks, manual lint/typecheck, CI overview
 ├── TESTING-STRATEGY.md  # short pyramid summary; details in README
 ├── .env.example         # environment variable reference — copy to .env for local dev
-├── compose.yaml         # Docker Compose: db, scheduler; profiles api, cotahist
+├── compose.yaml         # Docker Compose: db, scheduler, api; profile full/cotahist for heavy worker
 ├── compose.override.yaml # Dev overrides: api hot reload + app bind mount (merged automatically)
 ├── Dockerfile           # unified scraper/scheduler image
 ├── Dockerfile.api       # slim API-only image (no Playwright)
@@ -306,10 +307,14 @@ Copy `.env.example` to `.env` and adjust for your environment.
 | `DB_POOL_SIZE` | `5` | `5` | SQLAlchemy connection pool size |
 | `DB_MAX_OVERFLOW` | `10` | `10` | Additional connections beyond pool_size |
 | `DB_POOL_RECYCLE` | `1800` | `1800` | Recycle connections after N seconds (prevents stale-connection errors) |
-| `RUN_MIGRATIONS_ON_STARTUP` | `true` | `true` | Only used by **legacy** `docker/scheduler.py` (not by default Prefect CMD) |
-| `DAILY_RUN_HOUR` | `20` | `20` | Hour to trigger daily scrapers |
-| `DAILY_RUN_MINUTE` | `0` | `0` | Minute to trigger daily scrapers |
-| `SCRAPER_INTERVAL_SECONDS` | `1500` | `1500` | Quote loop cycle length (25 min) |
+| `RUN_MIGRATIONS_ON_STARTUP` | `true` | `true` | Only used by **legacy** `scripts/legacy_scheduler.py` (not default Prefect CMD) |
+| `PREFECT_DAILY_REGISTRY_CRON` | — | `0 8 * * *` | Cron for cadastro+negócios (timezone America/Sao_Paulo in serve) |
+| `PREFECT_INTRADAY_INTERVAL_MINUTES` | — | `30` | Interval for intraday Prefect deployment |
+| `RUN_STACK_BOOTSTRAP` / `STACK_BOOTSTRAP_MARKER` | — | see `.env.example` | Scheduler entrypoint one-shot bootstrap |
+| `SKIP_STACK_BOOTSTRAP_IF_FRESH` | — | `true` | Skip light bootstrap when today’s cadastro CSV exists |
+| `B3_EQUITIES_SESSION_OPEN` / `CLOSE` | — | `10:00` / `17:00` | Intraday window (update when B3 changes hours) |
+| `SCRAPER_INTERVAL_SECONDS` | `1500` | — | Legacy scheduler intraday loop only |
+| `DAILY_RUN_HOUR` / `DAILY_RUN_MINUTE` | `20` / `0` | — | Legacy scheduler daily trigger only |
 | `B3_DATA_DIR` | `data/sample` | `/app/data/raw` | Root raw-data directory |
 | `LOG_LEVEL` | `DEBUG` | `INFO` | Python logging level |
 | `PLAYWRIGHT_HEADLESS` | `false` | `true` | Run browser headless |
@@ -496,53 +501,72 @@ python scripts/run_b3_quote_batch.py
 
 Compose uses two files:
 
-- **compose.yaml** — base definition for `db`, `scheduler`, optional `api` (profile `api`), and optional `cotahist` (profile `cotahist`). Single source of truth.
+- **compose.yaml** — base definition for `db`, `scheduler`, `api` (default), and optional `cotahist` worker (profiles `full` or `cotahist`). Single source of truth.
 - **compose.override.yaml** — development overrides only (hot reload and bind mount of `./app` for the `api` service). It is merged automatically only when you run `docker compose up` with no `-f` flag: Compose then loads `compose.yaml` and merges `compose.override.yaml` if present. If you run `docker compose -f compose.yaml up`, only the base file is loaded; to include the override, use `docker compose -f compose.yaml -f compose.override.yaml up`. To run without overrides (e.g. production-like), use `docker compose -f compose.yaml up` so that only the base file is used.
 
 The API service is built from `Dockerfile.api` (slim image, no Playwright).
 
 ```powershell
-# Build and start db + scheduler
+# Build and start db + scheduler + api
 docker compose build
 docker compose up -d
 
 # Follow logs
 docker compose logs -f scheduler
+docker compose logs -f api
 docker compose logs -f db
 ```
 
-On first start the **scheduler** container will:
-1. Wait for the `db` service healthcheck to pass (`depends_on: condition: service_healthy`)
-2. Run **entrypoint.sh** (data dirs + Prefect home), then **`python -m app.etl.orchestration.prefect.serve`**
-3. Prefect registers deployments; the **daily** flow runs on cron (`DAILY_RUN_HOUR` / `DAILY_RUN_MINUTE`)
+Compose builds the scheduler image as `etlb3_scheduler:local`; the optional `cotahist` worker reuses that same tag for deterministic startup in clean environments.
 
-**Migrations:** the default CMD does **not** run Alembic automatically. Run `docker compose exec scheduler /app/.venv/bin/alembic upgrade head` (or use legacy `docker/scheduler.py`, which respects `RUN_MIGRATIONS_ON_STARTUP`). See [`docs/legacy_scheduler.md`](docs/legacy_scheduler.md).
-
-### Start the optional API service
+**Application code inside the scheduler (no bind mount):** the default `compose.yaml` does **not** mount `./app` into the `scheduler` service. Only `compose.override.yaml` wires a live mount for the **`api`** service. So after you change Python under `app/`, you must rebuild the scheduler image and recreate the container or the running process will still use the old code (e.g. stack traces pointing at an outdated `scraping_output_validator.py`).
 
 ```powershell
-# Build API image (slim, from Dockerfile.api) and start db + scheduler + API
-docker compose build api
-docker compose --profile api up -d
-
-# API: http://localhost:8000 — docs: http://localhost:8000/scalar
-docker compose logs -f api
+docker compose build scheduler
+docker compose up -d --force-recreate scheduler
+# Or in one step when you also changed the Dockerfile:
+docker compose up -d --build --force-recreate scheduler
 ```
 
-With `compose.override.yaml` present, the API runs with `--reload` and `./app` mounted, so code changes take effect without restarting the container.
+The **scheduler** healthcheck uses `pgrep -f` against the Python module path `app.etl.orchestration.prefect.serve`. If that module path is renamed, update the pattern in `compose.yaml` or the container may be marked unhealthy despite a running process.
 
-### Optional COTAHIST worker (separate container)
+On first start the **scheduler** container will:
+1. Wait for the `db` service healthcheck to pass (`depends_on: condition: service_healthy`)
+2. Run **entrypoint.sh** (data dirs, Alembic, optional **stack bootstrap**, Prefect home), then **`python -m app.etl.orchestration.prefect.serve`**
+3. Prefect registers **`daily-registry`** (cron, default 08:00 America/Sao_Paulo) and **`intraday-quotes`** (interval, default 30 minutes with a **fixed anchor** so ticks stay clock-aligned after restarts; the flow skips outside the B3 quote window)
 
-Annual COTAHIST (B3 ZIPs → `fact_cotahist_daily`) can run **in parallel** with the scheduler: it uses the same DB and `scraper_data` volume, a different table than boletim/intraday loads, and **does not** run Alembic. The Compose service depends only on `db` (healthy); the worker waits until `fact_cotahist_daily` exists — apply migrations first (e.g. `alembic upgrade head` via the scheduler container or any other process).
+**Light bootstrap vs 08:00 cron:** When `SKIP_STACK_BOOTSTRAP_IF_FRESH` is enabled (default in Compose), if today’s cadastro CSV already exists under `B3_DATA_DIR`, bootstrap is skipped and the light marker is still written. The scheduled `daily-registry` run can still scrape the same day; pipelines should tolerate duplicate loads. Use `FORCE_STACK_BOOTSTRAP=true` to force a full bootstrap run.
 
-The `cotahist` service is **one-shot** (`restart: "no"`): it exits when fetch + load finish. Use the profile to opt in.
+**Prefect `serve` contract:** `python -m app.etl.orchestration.prefect.serve` registers **lightweight** deployments only. It does **not** register COTAHIST or other heavy ingestors. Annual COTAHIST runs via the separate **`cotahist`** Compose service: `docker compose --profile full run --rm cotahist` (alias: `--profile cotahist`).
+
+**Migrations:** scheduler entrypoint runs `alembic upgrade head` before starting the runtime. You can still run it manually if needed: `docker compose exec scheduler /app/.venv/bin/alembic upgrade head`.
+
+### API service (default stack)
+
+`docker compose up -d` starts the API on port 8000. With `compose.override.yaml` present, the API runs with `--reload` and `./app` mounted, so code changes take effect without restarting the container.
 
 ```powershell
-docker compose --profile cotahist up -d
-docker compose --profile cotahist logs -f cotahist
+docker compose logs -f api
+# http://localhost:8000 — docs: http://localhost:8000/scalar
+```
 
-# Re-run after the container has exited (e.g. new years or retry)
-docker compose --profile cotahist run --rm cotahist
+### Full-stack / heavy worker (COTAHIST and future heavy ingestors)
+
+Profile **`full`** names the **complete financial data stack** (today: optional `cotahist`; later: more services under the same profile). It is **not** a second long-running scheduler unless you deliberately change `restart` policies.
+
+Annual COTAHIST (B3 ZIPs → `fact_cotahist_daily`) runs in a **separate one-shot container** (not inside the Prefect scheduler). The Compose **command** runs `app.etl.orchestration.prefect.full_stack_bootstrap`, which checks a **marker file** on the shared volume (default `/app/data/.bootstrap_full_v1.done`) and **skips** re-running the heavy worker on subsequent starts unless `FORCE_FULL_STACK_BOOTSTRAP=true`. The wrapper then invokes `docker/cotahist_worker.py` (same logic as before).
+
+The service **does not** run Alembic; it waits until `fact_cotahist_daily` exists (scheduler migrations). It can run in parallel with lightweight jobs on the same DB and `scraper_data` volume.
+
+The `cotahist` service is **one-shot** (`restart: "no"`): it is **not** a resident sidecar. Prefer `docker compose run --rm` for clarity; `docker compose --profile full up -d` will start it once per `up` (subject to the marker gate above).
+
+```powershell
+# Preferred explicit execution (one-shot) — profile `full` (alias `cotahist`)
+docker compose --profile full run --rm cotahist
+
+# Optional detached execution
+docker compose --profile full up -d
+docker compose --profile full logs -f cotahist
 ```
 
 Useful environment variables (all optional):
@@ -555,6 +579,10 @@ Useful environment variables (all optional):
 | `COTAHIST_YEAR_START` / `COTAHIST_YEAR_END` | Inclusive range (both required) |
 | `COTAHIST_FAIL_FAST` | If `true`: stop the fetch script on first year error |
 | `COTAHIST_TABLE_WAIT_RETRIES` / `COTAHIST_TABLE_WAIT_DELAY_S` | Poll limits while waiting for `fact_cotahist_daily` after connect |
+| `COTAHIST_LOCK_KEY_1` / `COTAHIST_LOCK_KEY_2` | Postgres advisory-lock keys to prevent concurrent one-shot runs |
+| `RUN_FULL_STACK_BOOTSTRAP` | If `false`: wrapper exits without running the worker (default `true` in Compose) |
+| `STACK_FULL_BOOTSTRAP_MARKER` | Path to skip marker (default under `/app/data/`) |
+| `FORCE_FULL_STACK_BOOTSTRAP` | If `true`: run worker even when marker exists |
 
 If `COTAHIST_YEAR*` are unset, the worker uses `B3_COTAHIST_YEAR_START` / `B3_COTAHIST_YEAR_END` from app settings (see `app/core/config.py`).
 
@@ -563,7 +591,7 @@ If `COTAHIST_YEAR*` are unset, the worker uses `B3_COTAHIST_YEAR_START` / `B3_CO
 ```powershell
 # Rebuild API after dependency or Dockerfile.api changes
 docker compose build api
-docker compose --profile api up -d
+docker compose up -d
 
 # Stop all services
 docker compose down
@@ -596,10 +624,10 @@ docker compose exec scheduler /app/.venv/bin/alembic upgrade head
 # Run ETL pipeline manually
 docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_etl.py
 
-# Run the Prefect daily flow manually (same orchestration code path as Docker)
+# Run the default lightweight Prefect chain manually (bootstrap-equivalent: cadastro, negócios, intraday)
 docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_prefect_daily_flow.py
-# Skip annual COTAHIST download for that run: add --no-cotahist
-# When enabled, the flow downloads each year in B3_COTAHIST_YEAR_START..B3_COTAHIST_YEAR_END (default 1986–2026); missing years (404) are skipped.
+# Registry-only (08:00-style): add --registry-only
+# Legacy combined flow with optional COTAHIST: add --combined --cotahist
 
 # With explicit paths
 docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_etl.py \
@@ -704,7 +732,7 @@ uv run pytest tests/e2e -m e2e -v
 | `tests/unit/` | Pure logic: column mapping, CSV resolver, ticker filter, asset sanitization / upsert SQL shape (mocked session). |
 | `tests/integration/test_api.py` | FastAPI `TestClient`: health, Scalar/OpenAPI, route smoke; ETL routes with mocked pipeline; `/quotes/latest` ticker parsing. |
 | `tests/integration/test_b3_quotes.py` | B3 client (`respx`), parsers, cache, use cases, quote routes, `read_tickers`, batch ingestion (JSONL + report). |
-| `tests/integration/test_scheduler.py` | `docker/scheduler.py` orchestration (mocked subprocess/sleep/DB). |
+| `tests/integration/test_scheduler.py` | `scripts/legacy_scheduler.py` orchestration (mocked subprocess/sleep/DB). |
 | `tests/integration/test_cli_entrypoints.py` | CLI `main()` dispatch (mocked pipelines/scrapers). |
 | `tests/integration/test_run_daily_batch.py` | `docker/run_daily_batch.sh` contract (bash `-n`, expected invocations). |
 | `tests/integration/test_db_smoke.py` | `SELECT 1` against real Postgres when available (skipped if DB down). |
