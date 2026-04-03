@@ -116,6 +116,24 @@ if ! /app/.venv/bin/alembic upgrade head; then
 fi
 
 # ---------------------------------------------------------------------------
+# Optional lightweight bootstrap (cadastro + negócios + intraday) before CMD
+# ---------------------------------------------------------------------------
+_run_bootstrap=true
+case "${RUN_STACK_BOOTSTRAP:-true}" in
+    0|false|f|no|n|off|FALSE|NO|OFF) _run_bootstrap=false ;;
+esac
+if [ "${_run_bootstrap}" = "true" ]; then
+    echo "[entrypoint] running stack bootstrap as scraper(1001): app.etl.orchestration.prefect.bootstrap"
+    if ! setpriv --reuid=1001 --regid=1001 --clear-groups -- \
+        /app/.venv/bin/python -m app.etl.orchestration.prefect.bootstrap; then
+        echo "[entrypoint] ERROR: stack bootstrap failed; refusing to start runtime." >&2
+        exit 1
+    fi
+else
+    echo "[entrypoint] skipping stack bootstrap (RUN_STACK_BOOTSTRAP disabled)"
+fi
+
+# ---------------------------------------------------------------------------
 # Drop to scraper and exec CMD
 # ---------------------------------------------------------------------------
 # Ensure a command was passed from Docker (via CMD or override). If none,

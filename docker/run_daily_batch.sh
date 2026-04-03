@@ -9,7 +9,7 @@
 #
 # NOTE: ETL invocation (discovery + load) is not in this script. Default
 # production orchestration is Prefect (docs/etl_canonical_runtime.md). Legacy
-# `docker/scheduler.py` may invoke this script; see docs/legacy_scheduler.md.
+# `scripts/legacy_scheduler.py` may invoke this script; see docs/legacy_scheduler.md.
 # =============================================================================
 set -euo pipefail
 IFS=$'\n\t'

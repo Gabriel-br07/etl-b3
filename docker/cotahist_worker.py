@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional Docker worker: fetch B3 annual COTAHIST ZIPs and load ``fact_cotahist_daily``.
 
-Runs as a separate Compose service (profile ``cotahist``). Does **not** run Alembic;
+Runs as a separate Compose service (profiles ``full`` or ``cotahist``). Does **not** run Alembic;
 waits until ``fact_cotahist_daily`` exists (scheduler or another process must apply migrations).
 
 Environment (optional unless noted):
@@ -14,6 +14,8 @@ Environment (optional unless noted):
     COTAHIST_DB_WAIT_RETRIES      Passed to ``wait_for_db`` first arg (default 30).
     COTAHIST_DB_WAIT_DELAY_S      Passed to ``wait_for_db`` delay (default 4).
     COTAHIST_FAIL_FAST       If true: pass ``--fail-fast`` to the fetch script.
+    COTAHIST_LOCK_KEY_1      Postgres advisory lock key 1 (default 4242).
+    COTAHIST_LOCK_KEY_2      Postgres advisory lock key 2 (default 1).
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ import time
 from pathlib import Path
 
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.exc import OperationalError, ProgrammingError, SQLAlchemyError
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -61,6 +63,13 @@ def _env_float(name: str, default: float) -> float:
     if v is None or not v.strip():
         return default
     return float(v)
+
+
+def _resolve_lock_keys() -> tuple[int, int]:
+    return (
+        _env_int("COTAHIST_LOCK_KEY_1", 4242),
+        _env_int("COTAHIST_LOCK_KEY_2", 1),
+    )
 
 
 def wait_for_cotahist_table(retries: int, delay_s: float) -> None:
@@ -138,7 +147,7 @@ def main() -> None:
     log.info("[cotahist_worker] starting")
 
     from app.core.config import settings
-    from app.db.engine import wait_for_db
+    from app.db.engine import engine, wait_for_db
 
     python = sys.executable
     cotahist_root = Path(settings.b3_cotahist_annual_dir).resolve()
@@ -154,39 +163,93 @@ def main() -> None:
         delay_s=_env_float("COTAHIST_TABLE_WAIT_DELAY_S", 5.0),
     )
 
-    fetch_year_args, etl_year_args = _resolve_year_args()
+    lock_key_1, lock_key_2 = _resolve_lock_keys()
+    lock_params = {"k1": lock_key_1, "k2": lock_key_2}
+    with engine.connect() as lock_conn:
+        acquired = bool(
+            lock_conn.execute(
+                text("SELECT pg_try_advisory_lock(:k1, :k2)"),
+                lock_params,
+            ).scalar()
+        )
+        if not acquired:
+            log.error(
+                "[cotahist_worker] another COTAHIST run is already active "
+                "(advisory lock %d:%d). Exiting without running.",
+                lock_key_1,
+                lock_key_2,
+            )
+            sys.exit(75)
+        log.info(
+            "[cotahist_worker] advisory lock acquired (%d:%d)",
+            lock_key_1,
+            lock_key_2,
+        )
+        # SQLAlchemy 2.x starts an implicit transaction on execute(); end it now
+        # so this connection does not remain idle-in-transaction while long
+        # subprocess work runs. The advisory lock is session-level and survives COMMIT.
+        lock_conn.commit()
 
-    if not _env_bool("COTAHIST_SKIP_DOWNLOAD", False):
-        fetch_cmd: list[str] = [
-            python,
-            str(FETCH_SCRIPT),
-            "--data-dir",
-            str(cotahist_root),
-            *fetch_year_args,
-        ]
-        if _env_bool("COTAHIST_FAIL_FAST", False):
-            fetch_cmd.append("--fail-fast")
-        log.info("[cotahist_worker] running fetch: %s", " ".join(fetch_cmd))
-        r = subprocess.run(fetch_cmd, cwd=str(APP_ROOT), check=False)
-        if r.returncode != 0:
-            log.error("[cotahist_worker] fetch script exited %s", r.returncode)
-            sys.exit(r.returncode)
-    else:
-        log.info("[cotahist_worker] skipping download (COTAHIST_SKIP_DOWNLOAD set)")
+        try:
+            fetch_year_args, etl_year_args = _resolve_year_args()
 
-    etl_cmd: list[str] = [
-        python,
-        str(ETL_SCRIPT),
-        "--run-cotahist-annual",
-        "--cotahist-data-dir",
-        str(cotahist_root),
-        *etl_year_args,
-    ]
-    log.info("[cotahist_worker] running ETL load: %s", " ".join(etl_cmd))
-    r2 = subprocess.run(etl_cmd, cwd=str(APP_ROOT), check=False)
-    if r2.returncode != 0:
-        log.error("[cotahist_worker] run_etl exited %s", r2.returncode)
-        sys.exit(r2.returncode)
+            if not _env_bool("COTAHIST_SKIP_DOWNLOAD", False):
+                fetch_cmd: list[str] = [
+                    python,
+                    str(FETCH_SCRIPT),
+                    "--data-dir",
+                    str(cotahist_root),
+                    *fetch_year_args,
+                ]
+                if _env_bool("COTAHIST_FAIL_FAST", False):
+                    fetch_cmd.append("--fail-fast")
+                log.info("[cotahist_worker] running fetch: %s", " ".join(fetch_cmd))
+                r = subprocess.run(fetch_cmd, cwd=str(APP_ROOT), check=False)
+                if r.returncode != 0:
+                    log.error("[cotahist_worker] fetch script exited %s", r.returncode)
+                    sys.exit(r.returncode)
+            else:
+                log.info("[cotahist_worker] skipping download (COTAHIST_SKIP_DOWNLOAD set)")
+
+            etl_cmd: list[str] = [
+                python,
+                str(ETL_SCRIPT),
+                "--run-cotahist-annual",
+                "--cotahist-data-dir",
+                str(cotahist_root),
+                *etl_year_args,
+            ]
+            log.info("[cotahist_worker] running ETL load: %s", " ".join(etl_cmd))
+            r2 = subprocess.run(etl_cmd, cwd=str(APP_ROOT), check=False)
+            if r2.returncode != 0:
+                log.error("[cotahist_worker] run_etl exited %s", r2.returncode)
+                sys.exit(r2.returncode)
+        finally:
+            try:
+                unlocked = bool(
+                    lock_conn.execute(
+                        text("SELECT pg_advisory_unlock(:k1, :k2)"),
+                        lock_params,
+                    ).scalar()
+                )
+                if unlocked:
+                    log.info(
+                        "[cotahist_worker] advisory lock released (%d:%d)",
+                        lock_key_1,
+                        lock_key_2,
+                    )
+                else:
+                    log.warning(
+                        "[cotahist_worker] advisory lock was not held during release (%d:%d)",
+                        lock_key_1,
+                        lock_key_2,
+                    )
+            except SQLAlchemyError:
+                log.exception(
+                    "[cotahist_worker] failed to release advisory lock (%d:%d)",
+                    lock_key_1,
+                    lock_key_2,
+                )
 
     log.info("[cotahist_worker] finished successfully")
 

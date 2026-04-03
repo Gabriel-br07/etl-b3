@@ -66,6 +66,7 @@ COPY . .
 # Ensure shell scripts and python entrypoints have LF line endings and are executable
 # Convert CRLF -> LF for all shell scripts and python scripts that may be executed inside the image,
 # then set the executable bit where appropriate.
+# Includes entrypoint.sh, entrypoint_cotahist.sh, and other docker/*.sh helpers.
 RUN sed -i 's/\r$//' /app/docker/*.sh /app/scripts/*.py || true \
  && chmod +x /app/docker/*.sh || true
 # Ensure the entrypoint is explicitly copied (helps clarity)
