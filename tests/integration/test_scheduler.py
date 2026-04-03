@@ -1,4 +1,4 @@
-"""Entrypoint tests for docker/scheduler.py (legacy stack; non-default CMD).
+"""Entrypoint tests for scripts/legacy_scheduler.py (legacy stack; non-default CMD).
 
 Canonical runtime is Prefect — see docs/legacy_scheduler.md. These tests keep
 contract coverage for the optional scheduler + run_daily_batch.sh path.
@@ -18,7 +18,7 @@ import pytest
 
 # Load scheduler module by path (docker is not a package)
 ROOT = Path(__file__).resolve().parent.parent.parent
-SCHEDULER_PATH = ROOT / "docker" / "scheduler.py"
+SCHEDULER_PATH = ROOT / "scripts" / "legacy_scheduler.py"
 
 
 def _load_scheduler():

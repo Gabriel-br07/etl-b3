@@ -4,11 +4,98 @@ from datetime import date
 from unittest.mock import patch
 
 from app.core.config import settings
+from app.etl.orchestration.csv_resolver import CSVNotFoundError
 from app.etl.orchestration.prefect.flows.daily_scraping_flow import (
+    daily_registry_flow,
     daily_scraping_flow,
     default_daily_parameters,
+    intraday_quotes_flow,
+    lightweight_bootstrap_flow,
 )
 from app.etl.orchestration.prefect.tasks.scraping_tasks import scrape_cotahist_task
+
+
+def test_daily_registry_flow_happy_path(tmp_path):
+    cadastro = tmp_path / "cadastro.csv"
+    negocios = tmp_path / "negocios.csv"
+    cadastro.write_text("ticker\nPETR4", encoding="utf-8")
+    negocios.write_text("ticker;trade_date\nPETR4;2026-03-26", encoding="utf-8")
+
+    with patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.scrape_cadastro_task",
+        return_value=cadastro,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.scrape_negocios_task",
+        return_value=negocios,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.validate_outputs_task",
+        return_value={"ok": True},
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.handoff_registry_loads_task",
+        return_value={"status": "success"},
+    ) as mock_reg:
+        result = daily_registry_flow(target_date=date(2026, 3, 26))
+
+    assert result["target_date"] == "2026-03-26"
+    assert result["validation"]["ok"] is True
+    assert result["handoff"]["status"] == "success"
+    mock_reg.assert_called_once()
+
+
+def test_intraday_quotes_flow_skipped_outside_window(tmp_path):
+    with patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.is_within_b3_quote_window",
+        return_value=False,
+    ):
+        out = intraday_quotes_flow(target_date=date(2026, 3, 26))
+    assert out["skipped"] is True
+    assert out["reason"] == "outside_quote_window"
+
+
+def test_intraday_quotes_flow_skipped_when_no_csv(tmp_path):
+    with patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.is_within_b3_quote_window",
+        return_value=True,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.resolve_instruments_csv",
+        side_effect=CSVNotFoundError("none"),
+    ):
+        out = intraday_quotes_flow(target_date=date(2026, 3, 26))
+    assert out["skipped"] is True
+    assert out["reason"] == "instruments_csv_missing"
+
+
+def test_lightweight_bootstrap_flow_calls_registry_then_intraday(tmp_path):
+    cadastro = tmp_path / "cadastro.csv"
+    negocios = tmp_path / "negocios.csv"
+    cadastro.write_text("ticker\nPETR4", encoding="utf-8")
+    negocios.write_text("ticker;trade_date\nPETR4;2026-03-26", encoding="utf-8")
+    report = tmp_path / "report.csv"
+
+    with patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.scrape_cadastro_task",
+        return_value=cadastro,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.scrape_negocios_task",
+        return_value=negocios,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.validate_outputs_task",
+        return_value={"ok": True},
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.handoff_registry_loads_task",
+        return_value={"registry": True},
+    ) as mock_reg, patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.run_intraday_quote_batch_task",
+        return_value=report,
+    ) as mock_intra, patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.handoff_intraday_load_task",
+        return_value={"intraday": True},
+    ) as mock_handoff:
+        lightweight_bootstrap_flow(target_date=date(2026, 3, 26))
+
+    mock_reg.assert_called_once()
+    mock_intra.assert_called_once()
+    mock_handoff.assert_called_once()
 
 
 def test_daily_scraping_flow_happy_path(tmp_path):
@@ -141,3 +228,35 @@ def test_daily_scraping_flow_default_path_passes_run_cotahist_false(tmp_path):
         daily_scraping_flow(target_date=date(2026, 3, 26))
 
     assert mock_cot.call_args.kwargs["enabled"] is False
+
+
+def test_intraday_quotes_flow_runs_when_inside_window(tmp_path):
+    cadastro = tmp_path / "cadastro_instrumentos_20260326.normalized.csv"
+    negocios = tmp_path / "negocios_consolidados_20260326.normalized.csv"
+    report = tmp_path / "report_20260326T120000.csv"
+    jsonl = tmp_path / "daily_fluctuation_20260326T120000.jsonl"
+    cadastro.write_text("ticker\nPETR4", encoding="utf-8")
+    negocios.write_text("ticker;trade_date\nPETR4;2026-03-26", encoding="utf-8")
+    report.write_text("x", encoding="utf-8")
+    jsonl.write_text("{}", encoding="utf-8")
+
+    with patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.is_within_b3_quote_window",
+        return_value=True,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.resolve_instruments_csv",
+        return_value=cadastro,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.find_negocios_sibling",
+        return_value=negocios,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.run_intraday_quote_batch_task",
+        return_value=report,
+    ), patch(
+        "app.etl.orchestration.prefect.flows.daily_scraping_flow.handoff_intraday_load_task",
+        return_value={"ok": True},
+    ):
+        out = intraday_quotes_flow(target_date=date(2026, 3, 26))
+
+    assert out["skipped"] is False
+    assert out["handoff"]["ok"] is True
