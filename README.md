@@ -35,7 +35,7 @@ Prefect (scripts/run_prefect_daily_flow.py OR python -m app.etl.orchestration.pr
 
 Heavy / full data stack (e.g. annual COTAHIST): Compose profile `full` — separate worker, not default Prefect deployments.
 
-ETL audit trail: etl_runs (+ scraper_run_audit for Prefect tasks). Legacy optional loop: docs/legacy_scheduler.md.
+ETL audit trail: etl_runs for loads; scraper_run_audit for Prefect scraper tasks and for the Docker cotahist annual extract stage (see docker/cotahist_worker.py).
 API layer (FastAPI): /assets, /quotes, /trades, /fact-quotes, /health, /etl
 ```
 
@@ -273,14 +273,13 @@ GET /fact-quotes/PETR4/days/2024-06-14
 │       ├── 0001_initial_schema.py   # dim_assets, fact_daily_quotes, etl_runs
 │       └── 0002_schema_v2.py        # fact_daily_trades, fact_quotes (hypertable),
 │                                    # enrich etl_runs, add asset_id FKs
-├── docs/                # etl_canonical_runtime.md, legacy_scheduler.md (runtime contract)
+├── docs/                # etl_canonical_runtime.md (runtime contract)
 ├── docker/
 │   ├── entrypoint.sh        # migrations, optional Prefect bootstrap, drop to scraper
-│   ├── run_daily_batch.sh   # runs both daily Playwright scrapers (legacy helper)
+│   ├── run_daily_batch.sh   # runs both daily Playwright scrapers (manual / ad-hoc helper)
 │   └── initdb/
 │       └── 01_timescaledb.sql  # CREATE EXTENSION timescaledb (auto-run by Postgres)
 ├── scripts/             # run_etl.py, run_prefect_daily_flow.py, run_b3_quote_batch.py, …
-│   └── legacy_scheduler.py  # LEGACY loop — see docs/legacy_scheduler.md (not default CMD)
 ├── tests/               # pytest: unit/, integration/, e2e/, fixtures/, conftest.py
 ├── .github/workflows/   # GitHub Actions: ci.yml (ruff, ty, pytest)
 ├── .pre-commit-config.yaml  # ruff + ty on git commit (after pre-commit install)
@@ -307,14 +306,14 @@ Copy `.env.example` to `.env` and adjust for your environment.
 | `DB_POOL_SIZE` | `5` | `5` | SQLAlchemy connection pool size |
 | `DB_MAX_OVERFLOW` | `10` | `10` | Additional connections beyond pool_size |
 | `DB_POOL_RECYCLE` | `1800` | `1800` | Recycle connections after N seconds (prevents stale-connection errors) |
-| `RUN_MIGRATIONS_ON_STARTUP` | `true` | `true` | Only used by **legacy** `scripts/legacy_scheduler.py` (not default Prefect CMD) |
+| `RUN_MIGRATIONS_ON_STARTUP` | `true` | `true` | Not read by application code; Docker scheduler runs `alembic upgrade head` in `docker/entrypoint.sh` before Prefect. Kept in `.env.example` for local documentation only. |
 | `PREFECT_DAILY_REGISTRY_CRON` | — | `0 8 * * *` | Cron for cadastro+negócios (timezone America/Sao_Paulo in serve) |
 | `PREFECT_INTRADAY_INTERVAL_MINUTES` | — | `30` | Interval for intraday Prefect deployment |
 | `RUN_STACK_BOOTSTRAP` / `STACK_BOOTSTRAP_MARKER` | — | see `.env.example` | Scheduler entrypoint one-shot bootstrap |
 | `SKIP_STACK_BOOTSTRAP_IF_FRESH` | — | `true` | Skip light bootstrap when today’s cadastro CSV exists |
 | `B3_EQUITIES_SESSION_OPEN` / `CLOSE` | — | `10:00` / `17:00` | Intraday window (update when B3 changes hours) |
-| `SCRAPER_INTERVAL_SECONDS` | `1500` | — | Legacy scheduler intraday loop only |
-| `DAILY_RUN_HOUR` / `DAILY_RUN_MINUTE` | `20` / `0` | — | Legacy scheduler daily trigger only |
+| `SCRAPER_INTERVAL_SECONDS` | `1500` | — | Not used by default Prefect stack (reserved / historical) |
+| `DAILY_RUN_HOUR` / `DAILY_RUN_MINUTE` | `20` / `0` | — | Not used by default Prefect stack (reserved / historical) |
 | `B3_DATA_DIR` | `data/sample` | `/app/data/raw` | Root raw-data directory |
 | `LOG_LEVEL` | `DEBUG` | `INFO` | Python logging level |
 | `PLAYWRIGHT_HEADLESS` | `false` | `true` | Run browser headless |
@@ -732,7 +731,8 @@ uv run pytest tests/e2e -m e2e -v
 | `tests/unit/` | Pure logic: column mapping, CSV resolver, ticker filter, asset sanitization / upsert SQL shape (mocked session). |
 | `tests/integration/test_api.py` | FastAPI `TestClient`: health, Scalar/OpenAPI, route smoke; ETL routes with mocked pipeline; `/quotes/latest` ticker parsing. |
 | `tests/integration/test_b3_quotes.py` | B3 client (`respx`), parsers, cache, use cases, quote routes, `read_tickers`, batch ingestion (JSONL + report). |
-| `tests/integration/test_scheduler.py` | `scripts/legacy_scheduler.py` orchestration (mocked subprocess/sleep/DB). |
+| `tests/integration/test_prefect_startup_contract.py` | Compose + Docker entrypoint contract (DB health, migrations, bootstrap order, cotahist profile). |
+| `tests/integration/test_cotahist_worker.py` | Docker cotahist worker: advisory lock, scraper_run_audit around annual fetch, ETL subprocess. |
 | `tests/integration/test_cli_entrypoints.py` | CLI `main()` dispatch (mocked pipelines/scrapers). |
 | `tests/integration/test_run_daily_batch.py` | `docker/run_daily_batch.sh` contract (bash `-n`, expected invocations). |
 | `tests/integration/test_db_smoke.py` | `SELECT 1` against real Postgres when available (skipped if DB down). |
