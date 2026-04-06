@@ -16,6 +16,9 @@ Environment (optional unless noted):
     COTAHIST_FAIL_FAST       If true: pass ``--fail-fast`` to the fetch script.
     COTAHIST_LOCK_KEY_1      Postgres advisory lock key 1 (default 4242).
     COTAHIST_LOCK_KEY_2      Postgres advisory lock key 2 (default 1).
+
+Fetch/extract is recorded in ``scraper_run_audit`` (``scraper_name=cotahist``) when the DB is
+reachable; ETL load remains audited only in ``etl_runs`` via ``run_etl.py``.
 """
 
 from __future__ import annotations
@@ -26,9 +29,15 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError, ProgrammingError, SQLAlchemyError
+from sqlalchemy.exc import InterfaceError, OperationalError, ProgrammingError, SQLAlchemyError
+
+from app.etl.orchestration.prefect.tasks.audit_tasks import (
+    finish_scraper_audit,
+    start_scraper_audit,
+)
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -143,6 +152,183 @@ def _resolve_year_args() -> tuple[list[str], list[str]]:
     )
 
 
+def _year_range_inclusive_from_fetch_args(fetch_year_args: list[str]) -> tuple[int, int]:
+    if "--year" in fetch_year_args:
+        i = fetch_year_args.index("--year")
+        y = int(fetch_year_args[i + 1])
+        return (y, y)
+    i = fetch_year_args.index("--from-year")
+    j = fetch_year_args.index("--to-year")
+    lo, hi = int(fetch_year_args[i + 1]), int(fetch_year_args[j + 1])
+    if lo > hi:
+        lo, hi = hi, lo
+    return (lo, hi)
+
+
+def _is_audit_db_unavailable(exc: BaseException) -> bool:
+    return isinstance(exc, (OperationalError, InterfaceError))
+
+
+def _tail_subprocess_output(stdout: str | None, stderr: str | None, max_chars: int = 4000) -> str:
+    combined = ((stdout or "") + (stderr or "")).strip()
+    if len(combined) <= max_chars:
+        return combined
+    return "... [truncated]\n" + combined[-max_chars:]
+
+
+def _safe_finish_scraper_audit(audit_id: int, **kwargs: Any) -> None:
+    status = kwargs.get("status")
+    try:
+        finish_scraper_audit(audit_id=audit_id, **kwargs)
+    except Exception:
+        log.exception(
+            "[cotahist_worker] finish_scraper_audit failed audit_id=%s status=%s",
+            audit_id,
+            status,
+        )
+
+
+def _scraper_audit_base_metadata(cotahist_root: Path, fetch_year_args: list[str]) -> dict:
+    lo, hi = _year_range_inclusive_from_fetch_args(fetch_year_args)
+    return {
+        "stage": "docker_annual_fetch",
+        "data_dir": str(cotahist_root),
+        "year_range": [lo, hi],
+    }
+
+
+def _record_extract_skipped_audit(cotahist_root: Path, fetch_year_args: list[str]) -> None:
+    base = _scraper_audit_base_metadata(cotahist_root, fetch_year_args)
+    try:
+        audit_id = start_scraper_audit(
+            scraper_name="cotahist",
+            target_date=None,
+            retry_count=0,
+            status="running",
+            metadata_json={**base, "reason": "COTAHIST_SKIP_DOWNLOAD"},
+        )
+        log.info(
+            "[cotahist_worker] scraper extract audit started (skip path) audit_id=%s",
+            audit_id,
+        )
+        _safe_finish_scraper_audit(
+            audit_id,
+            status="skipped",
+            retry_count=0,
+            metadata_json={**base, "reason": "COTAHIST_SKIP_DOWNLOAD"},
+        )
+        log.info("[cotahist_worker] scraper extract audit skipped audit_id=%s", audit_id)
+    except Exception as audit_exc:
+        if _is_audit_db_unavailable(audit_exc):
+            log.warning(
+                "[cotahist_worker] scraper audit unavailable (DB); skip-download path without audit row: %s",
+                audit_exc,
+            )
+            return
+        raise
+
+
+def _run_fetch_subprocess_with_scraper_audit(
+    *,
+    fetch_cmd: list[str],
+    cotahist_root: Path,
+    fetch_year_args: list[str],
+) -> None:
+    base = _scraper_audit_base_metadata(cotahist_root, fetch_year_args)
+    lo, hi = _year_range_inclusive_from_fetch_args(fetch_year_args)
+    audit_id: int | None = None
+    audit_finished = False
+    try:
+        try:
+            audit_id = start_scraper_audit(
+                scraper_name="cotahist",
+                target_date=None,
+                retry_count=0,
+                status="running",
+                metadata_json={**base, "fetch_cmd": " ".join(fetch_cmd)},
+            )
+            log.info(
+                "[cotahist_worker] scraper extract audit started audit_id=%s",
+                audit_id,
+            )
+        except Exception as audit_exc:
+            if _is_audit_db_unavailable(audit_exc):
+                log.warning(
+                    "[cotahist_worker] scraper audit unavailable (DB); running fetch without audit: %s",
+                    audit_exc,
+                )
+            else:
+                raise
+
+        log.info("[cotahist_worker] running fetch: %s", " ".join(fetch_cmd))
+        r = subprocess.run(
+            fetch_cmd,
+            cwd=str(APP_ROOT),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        if audit_id is not None:
+            if r.returncode != 0:
+                tail = _tail_subprocess_output(r.stdout, r.stderr)
+                err_msg = f"fetch script exited {r.returncode}"
+                if tail:
+                    err_msg = f"{err_msg}; output_tail=\n{tail}"
+                _safe_finish_scraper_audit(
+                    audit_id,
+                    status="failed",
+                    retry_count=0,
+                    error_type="SubprocessError",
+                    error_message=err_msg,
+                    metadata_json={
+                        **base,
+                        "returncode": r.returncode,
+                        "subprocess_output_tail": tail,
+                    },
+                )
+                audit_finished = True
+                log.error(
+                    "[cotahist_worker] fetch script exited %s audit_id=%s",
+                    r.returncode,
+                    audit_id,
+                )
+                sys.exit(r.returncode)
+
+            paths = [
+                cotahist_root / str(y) / f"COTAHIST_A{y}.TXT" for y in range(lo, hi + 1)
+            ]
+            last_path = paths[-1]
+            _safe_finish_scraper_audit(
+                audit_id,
+                status="success",
+                retry_count=0,
+                output_path=str(last_path),
+                output_file_name=last_path.name,
+                metadata_json={
+                    **base,
+                    "paths": [str(p) for p in paths],
+                    "years_ok": list(range(lo, hi + 1)),
+                    "years_skipped_404": [],
+                },
+            )
+            audit_finished = True
+            log.info("[cotahist_worker] fetch completed audit_id=%s", audit_id)
+        elif r.returncode != 0:
+            log.error("[cotahist_worker] fetch script exited %s", r.returncode)
+            sys.exit(r.returncode)
+    finally:
+        if audit_id is not None and not audit_finished:
+            _safe_finish_scraper_audit(
+                audit_id,
+                status="failed",
+                retry_count=0,
+                error_type="RuntimeError",
+                error_message="fetch stage aborted before audit could be finalized",
+                metadata_json=base,
+            )
+
+
 def main() -> None:
     log.info("[cotahist_worker] starting")
 
@@ -194,7 +380,7 @@ def main() -> None:
             fetch_year_args, etl_year_args = _resolve_year_args()
 
             if not _env_bool("COTAHIST_SKIP_DOWNLOAD", False):
-                fetch_cmd: list[str] = [
+                fetch_cmd = [
                     python,
                     str(FETCH_SCRIPT),
                     "--data-dir",
@@ -203,13 +389,14 @@ def main() -> None:
                 ]
                 if _env_bool("COTAHIST_FAIL_FAST", False):
                     fetch_cmd.append("--fail-fast")
-                log.info("[cotahist_worker] running fetch: %s", " ".join(fetch_cmd))
-                r = subprocess.run(fetch_cmd, cwd=str(APP_ROOT), check=False)
-                if r.returncode != 0:
-                    log.error("[cotahist_worker] fetch script exited %s", r.returncode)
-                    sys.exit(r.returncode)
+                _run_fetch_subprocess_with_scraper_audit(
+                    fetch_cmd=fetch_cmd,
+                    cotahist_root=cotahist_root,
+                    fetch_year_args=fetch_year_args,
+                )
             else:
                 log.info("[cotahist_worker] skipping download (COTAHIST_SKIP_DOWNLOAD set)")
+                _record_extract_skipped_audit(cotahist_root, fetch_year_args)
 
             etl_cmd: list[str] = [
                 python,

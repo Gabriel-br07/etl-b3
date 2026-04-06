@@ -9,7 +9,8 @@
 #
 # NOTE: ETL invocation (discovery + load) is not in this script. Default
 # production orchestration is Prefect (docs/etl_canonical_runtime.md). Legacy
-# `scripts/legacy_scheduler.py` may invoke this script; see docs/legacy_scheduler.md.
+# Manual or ad-hoc use from the scheduler container; default orchestration is Prefect
+# (see docs/etl_canonical_runtime.md). Compose documents: docker compose exec scheduler /app/docker/run_daily_batch.sh
 # =============================================================================
 set -euo pipefail
 IFS=$'\n\t'
