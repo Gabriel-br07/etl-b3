@@ -234,11 +234,19 @@ def run_intraday_quote_batch_task(
         logger.info("intraday quote batch done: report=%s", report)
         return report
     except Exception as exc:  # noqa: BLE001
-        finish_scraper_audit(
-            audit_id=audit_id,
-            status="failed",
-            retry_count=retry_count,
-            error_type=type(exc).__name__,
-            error_message=str(exc),
-        )
+        try:
+            finish_scraper_audit(
+                audit_id=audit_id,
+                status="failed",
+                retry_count=retry_count,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+        except Exception as audit_exc:  # noqa: BLE001
+            logger.warning(
+                "failed to persist scraper audit failure for audit_id=%s after quote batch error %s: %s",
+                audit_id,
+                type(exc).__name__,
+                audit_exc,
+            )
         raise
