@@ -8,7 +8,7 @@ Canonical runtime::
 
     from app.etl.orchestration.prefect.flows.daily_scraping_flow import daily_registry_flow
 
-See ``docs/etl_canonical_runtime.md``.
+See ``docs/architecture.md``.
 """
 # Intentionally empty — do NOT add eager imports of Prefect modules here.
 # Any module that imports app.etl.orchestration.csv_resolver would otherwise

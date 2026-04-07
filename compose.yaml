@@ -9,7 +9,7 @@
 #                  ENTRYPOINT entrypoint.sh → optional bootstrap →
 #                  CMD: python -m app.etl.orchestration.prefect.serve
 #                  Deployments: daily-registry (08:00 America/Sao_Paulo), intraday-quotes (interval).
-#                  See docs/etl_canonical_runtime.md
+#                  See docs/architecture.md
 #   api        — FastAPI HTTP API (starts with default `docker compose up -d`)
 #                  Scalar docs at http://localhost:8000/scalar
 #   cotahist   — one-shot annual COTAHIST fetch+load (profile full or cotahist)

@@ -1,777 +1,227 @@
 # etl-b3
 
-ETL pipeline and REST API for B3 public daily market data (Boletim Diário do Mercado).
+ETL pipeline and REST API for B3 public daily market data (*Boletim Diário do Mercado*): scrape and load instruments, consolidated trades, daily and intraday quotes, and optional annual COTAHIST history into PostgreSQL/TimescaleDB, with a FastAPI surface and Scalar docs.
 
-Short, focused documentation for getting the project running locally or with Docker.
+## What This Project Does
 
----
+- **Ingests** B3 bulletin files (Playwright), intraday quote batches (HTTP), and optional COTAHIST annual files.
+- **Stores** results in PostgreSQL; intraday series use a TimescaleDB hypertable when the extension is enabled.
+- **Serves** JSON over HTTP: assets, trades, quotes (DB and live delayed B3), fact-quotes, COTAHIST, market overview, ETL triggers, and health checks.
 
-## Overview
+## Main Capabilities
 
-- Primary orchestration path is Prefect (`app.etl.orchestration.prefect`), used by both local and Docker runs. **Canonical DAG and hot-path modules:** [`docs/etl_canonical_runtime.md`](docs/etl_canonical_runtime.md).
-- Scrapes B3 daily files (instruments + consolidated trades) using Playwright.
-- Normalizes files and runs a 25-minute quote ingestion loop that fetches per-ticker daily fluctuation histories and writes JSONL + report CSV outputs.
-- Stores results in **PostgreSQL + TimescaleDB** and exposes a FastAPI HTTP API (Scalar docs at `/scalar`).
+- Scheduled **Prefect** flows in Docker: daily cadastro + negócios + registry loads; intraday quote batch inside a configurable B3 session window.
+- **CLI scripts** for scrapers, full ETL, quote batch, COTAHIST annual fetch, and manual Prefect-style runs.
+- **Optional full (heavy) stack:** COTAHIST one-shot via Compose profile `full` / `cotahist` — not part of the default **light** `docker compose up`.
 
----
+## Quick Start
 
-## Architecture
+### Prerequisites
 
-Default runtime (local + Docker): **Prefect** serves **`daily-registry`** (08:00 America/Sao_Paulo cadastro + negócios + registry loads) and **`intraday-quotes`** (30-minute interval; no-ops outside the configured B3 quote window). Manual one-shots and legacy combined flow use `daily_scraping_flow` / `lightweight_bootstrap_flow`. See [`docs/etl_canonical_runtime.md`](docs/etl_canonical_runtime.md).
+- **Docker** (Docker Desktop or compatible) — use this for the **recommended** path: the **light** stack (`db` + `scheduler` + `api`) via `docker compose up -d`. That is **not** the same as the optional **COTAHIST** job: heavy annual backfill runs as a **separate one-shot** with Compose profile `full` / `cotahist` (see below), never as part of the default `up`.
+- **Python 3.13+** and **[uv](https://docs.astral.sh/uv/)** — required to run the API or scripts **on your machine** (local mode, tests, Alembic on the host, `uv run …`).
 
-```
-Prefect (scripts/run_prefect_daily_flow.py OR python -m app.etl.orchestration.prefect.serve)
-  |
-  +--> daily_registry_flow: scrape cadastro + negocios -> validate -> registry handoff
-  |      (BoletimDiarioScraper / NegociosConsolidadosScraper -> *.normalized.csv)
-  |
-  +--> intraday_quotes_flow: resolve latest CSVs -> quote batch -> intraday handoff
-  |      (skips outside B3 window; see app/etl/orchestration/market_hours.py)
-  |
-  +--> pipeline.py (via handoff tasks)
-         run_instruments_and_trades_pipeline -> dim_assets, fact_daily_trades
-         run_daily_quotes_pipeline          -> fact_daily_quotes
-         run_intraday_quotes_pipeline       -> fact_quotes (hypertable)
-
-Heavy / full data stack (e.g. annual COTAHIST): Compose profile `full` — separate worker, not default Prefect deployments.
-
-ETL audit trail: etl_runs for loads; scraper_run_audit for Prefect scraper tasks and for the Docker cotahist annual extract stage (see docker/cotahist_worker.py).
-API layer (FastAPI): /assets, /quotes, /trades, /fact-quotes, /health, /etl
-```
-
-### Annual COTAHIST (optional backfill)
-
-B3 publishes yearly ZIP files (`COTAHIST_A{year}.zip`) with a fixed-width TXT (245-byte records: header `00`, quotes `01`, trailer `99`). The workflow is **split into two stages**: fetch raw files (no database), then load via the same ETL entrypoint as the rest of the project.
-
-**Stage 1 — fetch / extract / validate (no Postgres)**  
-Script: [`scripts/run_b3_cotahist_annual.py`](scripts/run_b3_cotahist_annual.py). Downloads ZIPs, extracts normalized `.TXT`, and (by default) runs parse-only validation and logs stats. Never writes `etl_runs` or `fact_cotahist_daily`.
-
-| Flag | Behavior |
-|------|----------|
-| *(default)* | Download ZIP, extract TXT, parse validation (log counters). |
-| `--dry-run` | Log URLs and paths only. |
-| `--download-only` | ZIP only. |
-| `--extract-only` | Extract from an **existing** ZIP only (no download). |
-| `--parse-only` | Download if needed, extract, parse validation. |
-| `--year` / `--from-year` `--to-year` | Year selection (default range from settings: **1986–2026**). |
-| `--data-dir` | Root directory (default: `B3_COTAHIST_ANNUAL_DIR`). |
-
-**Stage 2 — load into the database**  
-Script: [`scripts/run_etl.py`](scripts/run_etl.py). **Default** and **`--run-all`** run annual COTAHIST after the other steps: they auto-scan `B3_COTAHIST_ANNUAL_DIR` for `**/COTAHIST_A*.TXT` (same glob as `--cotahist-dir`) and call `run_cotahist_annual_pipeline` per file (upsert into **`fact_cotahist_daily`**, with audit disabled in this mode, so no `etl_runs` rows are recorded for these executions). If no TXTs are found, the step is **skipped** with a warning (run Stage 1 first if you expect data). **`--run-cotahist-annual`** runs **only** COTAHIST and still **requires** resolved inputs (or files under the annual root via the same glob when you pass no path flags). Narrow the default load with `--cotahist-year`, `--cotahist-txt`, `--cotahist-dir`, etc. A large tree of annual files can make a full `run_etl` run slow.
+### Environment
 
 ```powershell
-# Stage 1
-uv run python scripts/run_b3_cotahist_annual.py --dry-run
-uv run python scripts/run_b3_cotahist_annual.py --year 2023
-uv run python scripts/run_b3_cotahist_annual.py --from-year 2020 --to-year 2022
-uv run python scripts/run_b3_cotahist_annual.py --download-only --year 2023
-uv run python scripts/run_b3_cotahist_annual.py --extract-only --year 2023
-uv run python scripts/run_b3_cotahist_annual.py --parse-only --year 2023
-
-# Stage 2 (after TXT files exist under the annual root or use explicit paths)
-uv run python scripts/run_etl.py
-uv run python scripts/run_etl.py --run-cotahist-annual --cotahist-year 2023
-uv run python scripts/run_etl.py --run-cotahist-annual --cotahist-from-year 2020 --cotahist-to-year 2022
-uv run python scripts/run_etl.py --run-cotahist-annual --cotahist-txt data/raw/b3/cotahist_annual/2023/COTAHIST_A2023.TXT
-uv run python scripts/run_etl.py --run-cotahist-annual --cotahist-dir data/raw/b3/cotahist_annual
+cp .env.example .env
 ```
 
-- **Raw files:** `{B3_COTAHIST_ANNUAL_DIR}/{year}/COTAHIST_A{year}.zip` (+ extracted `COTAHIST_A{year}.TXT`). Default directory: `data/raw/b3/cotahist_annual`.
-- **Legacy ZIP layout:** Through 2001, B3 often ships a single inner file named `COTAHIST.A{year}` or `COTAHIST_A{year}` **without** a `.txt` extension (from 2002 onward the inner name is usually `COTAHIST_A{year}.TXT`). Extraction detects all of these and writes a normalized `COTAHIST_A{year}.TXT` beside the ZIP for parsing.
-- **Pipeline:** `run_cotahist_annual_pipeline` in [`app/etl/orchestration/pipeline.py`](app/etl/orchestration/pipeline.py)
-- **Layout reference:** [Historical quotations layout (B3 PDF)](https://www.b3.com.br/data/files/65/50/AD/26/29C8B51095EE46B5790D8AA8/HistoricalQuotations_B3.pdf)
+The **full variable list and comments** live in [`.env.example`](.env.example) (that file is the source of truth for env names and defaults). Defaults assume Postgres user/db `etlb3` (Compose uses the `db` service; local mode often uses `localhost:5432`).
 
-**Source-of-truth / overlap**
-
-| Store | Grain | Notes |
-|-------|--------|--------|
-| `fact_daily_quotes` | `(ticker, trade_date)` from negocios CSV | Unchanged; daily pipeline remains authoritative for this table. |
-| `fact_quotes` | Intraday `(ticker, quoted_at)` | Unrelated to COTAHIST. |
-| `fact_cotahist_daily` | Full B3 type-01 natural key (date, codneg, BDI, market type, spec, term, moeda, expiration key, ISIN, distribution, …) | Authoritative for annual file content at that key. **No automatic writes** into the daily quote tables. The same calendar date + ticker may appear in both `fact_daily_quotes` and `fact_cotahist_daily` with different semantics; consumers choose the source. |
-
-**Idempotency:** upsert on `uq_cotahist_natural_key` — rerunning the same year/file is safe. **Last successful load wins** for that key (mutable fields and `ingested_at` / `source_file_name` refresh on conflict).
-
-Configuration: `b3_cotahist_*` and `b3_cotahist_annual_dir` in [`app/core/config.py`](app/core/config.py) (base URL, timeouts, retries, year range, on-disk root). Some future years may 404 until B3 publishes the file.
-
-**COTAHIST-only `run_etl`:** If you run only `--run-cotahist-annual` with explicit `--cotahist-txt` files, the orchestrator skips validation of `B3_DATA_DIR` (so a placeholder `data/sample` path does not block loads).
-
----
-
-## How the load flow works
-
-### Three-transaction audit pattern
-
-Every pipeline run uses **three separate database transactions** to ensure the audit log is always recorded, even when the data load fails:
-
-```
-Transaction 1 (audit start)
-  └─ INSERT etl_runs (status=RUNNING) → commit → store run_id
-
-Transaction 2 (data load)  ← atomic batch
-  ├─ load_assets(db, rows)   — upsert dim_assets
-  ├─ load_trades(db, rows)   — upsert fact_daily_trades
-  └─ commit  (or rollback on ANY exception — no partial commits)
-
-Transaction 3 (audit finish) ← independent of transaction 2
-  └─ UPDATE etl_runs SET status=SUCCESS/FAILED → commit
-```
-
-Key properties:
-- **Atomicity**: if transaction 2 raises any exception, the whole batch rolls back. No partial rows are committed.
-- **Audit isolation**: transaction 3 always runs in its own session, so a data failure does not prevent recording `status=FAILED` in `etl_runs`.
-- **Idempotency**: upsert semantics (ON CONFLICT DO UPDATE / DO NOTHING) mean reprocessing the same file is safe — it updates existing rows rather than duplicating them.
-
-### Entry points
-
-| Function | Module | Writes to |
-|---|---|---|
-| `run_instruments_and_trades_pipeline(csv, trades, date)` | `app/etl/orchestration/pipeline.py` | `dim_assets`, `fact_daily_trades`, `etl_runs` |
-| `run_intraday_quotes_pipeline(jsonl_path)` | `app/etl/orchestration/pipeline.py` | `fact_quotes`, `etl_runs` |
-| `run_daily_quotes_pipeline(...)` | `app/etl/orchestration/pipeline.py` | `fact_daily_quotes`, `etl_runs` |
-| `run_cotahist_annual_pipeline(txt_path)` | `app/etl/orchestration/pipeline.py` | `fact_cotahist_daily`, `etl_runs` |
-
-### Loaders and repositories
-
-```
-pipeline.py
-  └─ db_loader.py
-       ├─ load_assets(db, rows)           → AssetRepository.upsert_many()
-       ├─ load_trades(db, rows)           → TradeRepository.upsert_many()
-       ├─ load_daily_quotes(db, rows)     → QuoteRepository.upsert_many()   (legacy)
-       └─ load_intraday_quotes(db, rows)  → FactQuoteRepository.insert_many()
-       └─ load_cotahist_quotes(db, rows)  → CotahistQuoteRepository.upsert_many()
-```
-
-Repositories **never call `db.commit()`** — the caller (`managed_session`) commits once at the end of the block to provide atomicity across all repository calls.
-
----
-
-## Database schema
-
-| Table | Description |
-|---|---|
-| `dim_assets` | Instrument master data (one row per ticker) |
-| `fact_daily_trades` | Consolidated trading data by asset/date (NegociosConsolidados) |
-| `fact_daily_quotes` | Daily consolidated quotes (legacy, kept for API compatibility) |
-| `fact_quotes` | Intraday time-series quotes — **TimescaleDB hypertable** partitioned on `quoted_at` |
-| `fact_cotahist_daily` | Annual COTAHIST type-01 rows (full B3 grain; upsert on natural key) |
-| `etl_runs` | ETL observability: pipeline name, status, rows inserted/failed, source file/date |
-
----
-
-## REST API
-
-The API exposes B3 market data stored in the database plus optional live delayed data from B3. All list endpoints return paginated responses with `total`, `limit`, `offset`, and `items`.
-
-- **Base URL (local):** `http://localhost:8000`
-- **Documentation:** [http://localhost:8000/scalar](http://localhost:8000/scalar) — interactive API reference (Scalar).
-
-### Main routes
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check (version, environment). |
-| GET | `/assets` | List assets (paginated; optional search `q` by ticker or name). |
-| GET | `/assets/{ticker}` | Get asset by ticker. |
-| GET | `/quotes/latest` | Latest daily quote per ticker (DB). |
-| GET | `/quotes/{ticker}/history` | Historical daily quotes for a ticker (DB). |
-| GET | `/quotes/{ticker}` | Latest intraday snapshot (live B3, delayed). |
-| GET | `/quotes/{ticker}/intraday` | Full intraday series (live B3, delayed). |
-| GET | `/quotes/{ticker}/snapshot` | Legacy delayed quote snapshot (live B3). |
-| GET | `/trades` | List daily trades (filter by `trade_date`, `ticker`, `start_date`/`end_date`). |
-| GET | `/trades/{ticker}/history` | Trade history for a ticker. |
-| GET | `/trades/{ticker}` | Single daily trade (query param `trade_date` required). |
-| GET | `/fact-quotes/{ticker}/series` | Intraday series from DB (query `start`, `end` datetime, `limit`). |
-| GET | `/fact-quotes/{ticker}/days/{trade_date}` | Intraday points for one trade date (DB). |
-| POST | `/etl/run-latest` | Trigger ETL for latest date (local CSV). |
-| POST | `/etl/backfill` | Trigger historical ETL backfill (body: `date_from`, `date_to`). |
-
-### Endpoint reference — data provided
-
-This section describes **what type of data** each endpoint returns so you can choose the right one for your use case. **DB** = data persisted in the application database (from the ETL pipeline). **Live B3** = data fetched on demand from B3’s public API (delayed, not real-time).
-
-#### Health
-
-| Endpoint | Data source | Response shape |
-|----------|-------------|----------------|
-| `GET /health` | Application | `status` (e.g. `"ok"`), `version`, `environment`. Use for liveness/readiness probes. |
-
-#### Assets (B3 listed instruments)
-
-| Endpoint | Data source | Response shape |
-|----------|-------------|----------------|
-| `GET /assets` | DB (`dim_assets`) | Paginated list. Each item: `ticker`, `asset_name`, `isin`, `segment`, `source_file_date`, `id`, `created_at`, `updated_at`. Optional search by ticker or name (`q`). |
-| `GET /assets/{ticker}` | DB | Single asset: same fields as above. 404 if ticker not found. |
-
-#### Quotes (daily and live)
-
-| Endpoint | Data source | Response shape |
-|----------|-------------|----------------|
-| `GET /quotes/latest` | DB (`fact_daily_quotes`) | Paginated list of **latest daily quote per ticker** (one row per ticker, most recent `trade_date`). Each item: `ticker`, `trade_date`, `last_price`, `min_price`, `max_price`, `avg_price`, `variation_pct`, `financial_volume`, `trade_count`, `source_file_name`, `id`, `ingested_at`. Optional filter by comma-separated `tickers`. |
-| `GET /quotes/{ticker}/history` | DB | List of **historical daily quotes** for one ticker. Same fields per item. Optional `start_date`, `end_date`, `limit`. Ordered by `trade_date` descending. |
-| `GET /quotes/{ticker}` | Live B3 (delayed) | **Latest intraday snapshot** for the ticker: `ticker`, `trade_date`, `message_datetime`, last quote fields (e.g. `close_price`, `price_fluctuation_pct`), `delayed`, `fetched_at`. Cached in-memory (configurable TTL). |
-| `GET /quotes/{ticker}/intraday` | Live B3 (delayed) | **Full minute-level intraday series**: `ticker`, `trade_date`, `message_datetime`, `points` (array of `time`, `close_price`, etc.), `delayed`, `fetched_at`. |
-| `GET /quotes/{ticker}/snapshot` | Live B3 (delayed) | Legacy **delayed quote snapshot**: same idea as `/quotes/{ticker}` with a slightly different field layout. |
-
-#### Trades (daily consolidated — Negocios Consolidados)
-
-| Endpoint | Data source | Response shape |
-|----------|-------------|----------------|
-| `GET /trades` | DB (`fact_daily_trades`) | Paginated list of **daily consolidated trades**. Each item: `id`, `ticker`, `trade_date`, `open_price`, `close_price`, `min_price`, `max_price`, `avg_price`, `variation_pct`, `financial_volume`, `trade_count`, `source_file_name`, `ingested_at`. Filter by `trade_date`, `ticker`, `start_date`/`end_date`. |
-| `GET /trades/{ticker}/history` | DB | List of **daily trades for one ticker**. Same fields. Optional `start_date`, `end_date`, `limit`. |
-| `GET /trades/{ticker}` | DB | **Single daily trade** for ticker + `trade_date` (query param required). Same fields. 404 if not found. |
-
-#### Fact quotes (intraday time-series from DB)
-
-| Endpoint | Data source | Response shape |
-|----------|-------------|----------------|
-| `GET /fact-quotes/{ticker}/series` | DB (`fact_quotes` hypertable) | List of **intraday quote points** in a datetime range. Each item: `ticker`, `quoted_at`, `trade_date`, `close_price`, `price_fluctuation_pct`. Query params: `start`, `end` (ISO 8601), `limit`. Use for persisted intraday data; for live data use `/quotes/{ticker}/intraday`. |
-| `GET /fact-quotes/{ticker}/days/{trade_date}` | DB | All **intraday points for one trade date**. Same fields per item. Returns empty list if no data for that day. |
-
-#### ETL (pipeline triggers)
-
-| Endpoint | Data source | Response shape |
-|----------|-------------|----------------|
-| `POST /etl/run-latest` | Local CSV (B3_DATA_DIR) | Runs ETL for the latest available date. Returns `status`, `result` (pipeline summary: target date, assets/trades upserted, status). Only supports local source; 501 if `source_mode=remote`. |
-| `POST /etl/backfill` | Local CSV | Runs ETL for a date range (body: `date_from`, `date_to`, optional `source_mode`). Returns `total_dates`, `results` (array of per-date summaries). Only supports local source. |
-
-### Example requests
-
-```http
-GET /assets?q=PETR&limit=10
-GET /trades?trade_date=2024-06-14&limit=20
-GET /trades/PETR4?trade_date=2024-06-14
-GET /quotes/PETR4/history?start_date=2024-06-01&end_date=2024-06-14
-GET /fact-quotes/PETR4/days/2024-06-14
-```
-
----
-
-## Project structure (high level)
-
-```
-.
-├── app/
-│   ├── api/             # FastAPI: app/api/routes/ (assets, quotes, trades, fact_quotes, health, etl)
-│   ├── core/            # config (pydantic-settings), logging, constants
-│   ├── db/              # SQLAlchemy models, engine, session factory
-│   ├── etl/
-│   │   ├── ingestion/   # file adapters (local, remote), ticker filter
-│   │   ├── loaders/     # db_loader.py: load_assets, load_trades, load_intraday_quotes
-│   │   ├── orchestration/
-│   │   │   ├── pipeline.py     # ← PRIMARY: standalone ETL pipeline (Prefect handoff + run_etl + API)
-│   │   │   ├── prefect/        # Canonical runtime: flows, tasks, serve
-│   │   │   └── csv_resolver.py # CSV discovery with retry/fallback
-│   │   ├── parsers/     # instruments_parser, trades_parser, jsonl_quotes_parser
-│   │   └── transforms/  # b3_transforms (pure Polars functions)
-│   ├── repositories/    # AssetRepository, TradeRepository, QuoteRepository,
-│   │                    # FactQuoteRepository, ETLRunRepository
-│   ├── schemas/         # Pydantic API schemas
-│   └── use_cases/       # batch_ingestion use case
-├── alembic/             # Alembic migration scripts
-│   └── versions/
-│       ├── 0001_initial_schema.py   # dim_assets, fact_daily_quotes, etl_runs
-│       └── 0002_schema_v2.py        # fact_daily_trades, fact_quotes (hypertable),
-│                                    # enrich etl_runs, add asset_id FKs
-├── docs/                # etl_canonical_runtime.md (runtime contract)
-├── docker/
-│   ├── entrypoint.sh        # migrations, optional Prefect bootstrap, drop to scraper
-│   ├── run_daily_batch.sh   # runs both daily Playwright scrapers (manual / ad-hoc helper)
-│   └── initdb/
-│       └── 01_timescaledb.sql  # CREATE EXTENSION timescaledb (auto-run by Postgres)
-├── scripts/             # run_etl.py, run_prefect_daily_flow.py, run_b3_quote_batch.py, …
-├── tests/               # pytest: unit/, integration/, e2e/, fixtures/, conftest.py
-├── .github/workflows/   # GitHub Actions: ci.yml (ruff, ty, pytest)
-├── .pre-commit-config.yaml  # ruff + ty on git commit (after pre-commit install)
-├── CONTRIBUTING.md      # hooks, manual lint/typecheck, CI overview
-├── TESTING-STRATEGY.md  # short pyramid summary; details in README
-├── .env.example         # environment variable reference — copy to .env for local dev
-├── compose.yaml         # Docker Compose: db, scheduler, api; profile full/cotahist for heavy worker
-├── compose.override.yaml # Dev overrides: api hot reload + app bind mount (merged automatically)
-├── Dockerfile           # unified scraper/scheduler image
-├── Dockerfile.api       # slim API-only image (no Playwright)
-└── pyproject.toml
-```
-
----
-
-## Environment variables
-
-Copy `.env.example` to `.env` and adjust for your environment.
-
-| Variable | Local default | Docker value | Description |
-|---|---|---|---|
-| `DATABASE_URL` | `postgresql://etlb3:etlb3pass@localhost:5432/etlb3` | `postgresql://etlb3:etlb3pass@db:5432/etlb3` | PostgreSQL connection string |
-| `APP_ENV` | `development` | `production` | Controls SQL echo and log verbosity |
-| `DB_POOL_SIZE` | `5` | `5` | SQLAlchemy connection pool size |
-| `DB_MAX_OVERFLOW` | `10` | `10` | Additional connections beyond pool_size |
-| `DB_POOL_RECYCLE` | `1800` | `1800` | Recycle connections after N seconds (prevents stale-connection errors) |
-| `RUN_MIGRATIONS_ON_STARTUP` | `true` | `true` | Not read by application code; Docker scheduler runs `alembic upgrade head` in `docker/entrypoint.sh` before Prefect. Kept in `.env.example` for local documentation only. |
-| `PREFECT_DAILY_REGISTRY_CRON` | — | `0 8 * * *` | Cron for cadastro+negócios (timezone America/Sao_Paulo in serve) |
-| `PREFECT_INTRADAY_INTERVAL_MINUTES` | — | `30` | Interval for intraday Prefect deployment |
-| `RUN_STACK_BOOTSTRAP` / `STACK_BOOTSTRAP_MARKER` | — | see `.env.example` | Scheduler entrypoint one-shot bootstrap |
-| `SKIP_STACK_BOOTSTRAP_IF_FRESH` | — | `true` | Skip light bootstrap when today’s cadastro CSV exists |
-| `B3_EQUITIES_SESSION_OPEN` / `CLOSE` | — | `10:00` / `17:00` | Intraday window (update when B3 changes hours) |
-| `SCRAPER_INTERVAL_SECONDS` | `1500` | — | Not used by default Prefect stack (reserved / historical) |
-| `DAILY_RUN_HOUR` / `DAILY_RUN_MINUTE` | `20` / `0` | — | Not used by default Prefect stack (reserved / historical) |
-| `B3_DATA_DIR` | `data/sample` | `/app/data/raw` | Root raw-data directory |
-| `LOG_LEVEL` | `DEBUG` | `INFO` | Python logging level |
-| `PLAYWRIGHT_HEADLESS` | `false` | `true` | Run browser headless |
-
-> **Local vs Docker key difference**: `DATABASE_URL` uses `localhost` locally and the Compose service name `db` inside Docker. Everything else uses the same application code — only env vars differ.
-
----
-
-## Prerequisites
-
-Before setting up the project locally, ensure you have the following installed:
-
-- **Python 3.13 or higher** — The project requires Python 3.13+ (see `requires-python` in `pyproject.toml`)
-- **uv** — The project uses `uv` as its package manager. This is required for installing dependencies and running development commands.
-
-### Installing uv
-
-The project does not specify a minimum `uv` version. Install the latest version using one of the methods below.
-
-#### Linux
-
-**Recommended: Standalone installer**
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-**Alternative methods:**
-- Homebrew: `brew install uv`
-- pip: `pip install uv`
-- pipx: `pipx install uv`
-
-#### macOS
-
-**Recommended: Standalone installer**
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-**Alternative methods:**
-- Homebrew: `brew install uv`
-- MacPorts: `sudo port install uv`
-- pipx: `pipx install uv`
-- Cargo: `cargo install --locked uv`
-
-#### Windows
-
-**Recommended: PowerShell installer**
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-**Alternative methods:**
-- WinGet: `winget install --id=astral-sh.uv -e`
-- Scoop: `scoop install main/uv`
-- pipx: `pipx install uv`
-
-### Verifying installation
-
-After installation, verify that `uv` is installed correctly:
-
-```bash
-uv --version
-```
-
-You may need to restart your terminal or add `uv` to your PATH if the command is not found. The standalone installers handle PATH configuration automatically.
-
----
-
-## Local development setup
-
-> **Note:** Ensure you have completed the [Prerequisites](#prerequisites) section above (Python 3.13+ and `uv` installed) before proceeding.
-
-### 1. Install dependencies
+### Install dependencies (uv)
 
 ```powershell
 uv venv
 uv sync --locked
 ```
 
-### 2. Configure environment
+You need this for **local mode** and for any **host-side** commands (`uv run alembic`, `uv run uvicorn`, tests). The Docker images use their own virtualenv inside the container; you do not need `uv` *inside* the container.
+
+### 1) Docker (recommended)
+
+Compose supports two levels of work. **Light** is what most people want day to day; **full** is heavier and optional.
+
+| Mode | What you get | Weight |
+|------|----------------|--------|
+| **Light (default)** | `db` + `scheduler` (Prefect + Playwright) + `api` — daily bulletin ETL, intraday quote loop, HTTP API | **Lower** — normal CPU, disk, and network for daily use. |
+| **Full (optional)** | Everything in **light**, plus the ability to run the **COTAHIST** one-shot service (`compose` profiles `full` / `cotahist`) | **Higher** — large annual downloads/loads, more disk and time; run only when you need historical COTAHIST backfill. |
+
+`docker compose up -d` starts **only the light stack**. The COTAHIST worker is **not** started by default; you run it explicitly when you want the full/heavy path (see below).
+
+**Light stack — build and run:**
 
 ```powershell
-cp .env.example .env
-# Edit .env if needed — defaults work with the Docker db service below
+docker compose build
+docker compose up -d
 ```
 
-### 3. Start PostgreSQL + TimescaleDB locally
+- **API:** `http://localhost:8000` — docs: `http://localhost:8000/scalar`, OpenAPI: `http://localhost:8000/openapi.json`
+- **Scheduler** runs Prefect `serve` (`daily-registry`, `intraday-quotes`). Details: [docs/architecture.md](docs/architecture.md).
+
+`compose.override.yaml` (if present) adds API hot reload and a bind mount of `./app`. Production-like run without those overrides:
 
 ```powershell
-# Starts only the db service (not the scheduler)
+docker compose -f compose.yaml up -d
+```
+
+**Full stack — COTAHIST only when needed:**
+
+```powershell
+docker compose --profile full run --rm cotahist
+```
+
+Marker file, env vars, and behavior: [docs/architecture.md](docs/architecture.md#operational-notes).
+
+### 2) Local mode (API on the host)
+
+Use this when you prefer **only Postgres in Docker** (or another Postgres you manage) and run FastAPI **locally** with `uv`.
+
+```powershell
 docker compose up -d db
-```
-
-This starts `timescale/timescaledb:2.17.2-pg16` on `localhost:5432`.
-The `01_timescaledb.sql` init script enables the TimescaleDB extension automatically on first boot.
-
-### 4. Run Alembic migrations
-
-```powershell
-alembic upgrade head
-```
-
-### 5. Run the API
-
-```powershell
+uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-Use `uv run` so that uvicorn runs with the project virtualenv (where FastAPI, scalar_fastapi, etc. are installed). If you run `uvicorn` from a global or conda Python, you may get `ModuleNotFoundError: No module named 'scalar_fastapi'`.
+- Same URLs as above: `http://localhost:8000`, `/scalar`, `/openapi.json`
+- Use `uv run` so dependencies come from the project virtualenv.
 
-- API base: `http://localhost:8000`
-- Interactive docs: [http://localhost:8000/scalar](http://localhost:8000/scalar)
+This path does **not** start the **scheduler** (no automatic scrapes/Prefect). For scraping and scheduled ETL, use **Docker light** or run scripts manually (see [Running the Project](#running-the-project)).
 
-See [REST API](#rest-api) above for main routes and examples.
+## Running the Project
 
-### 6. Run the ETL pipeline manually (local)
+The [Quick Start](#quick-start) above covers **Docker (light vs full)** and **local API + Docker DB**. Below is a concise reference and extra commands.
 
-**Option A — CLI script (recommended)**
-
-```powershell
-# Auto-discovers CSVs from B3_DATA_DIR (data/sample by default)
-python scripts/run_etl.py
-
-# Explicit paths + date
-python scripts/run_etl.py `
-    --instruments data/raw/b3/boletim_diario/2024-06-14/cadastro_instrumentos_20240614.normalized.csv `
-    --trades      data/raw/b3/boletim_diario/2024-06-14/negocios_consolidados_20240614.normalized.csv `
-    --date        2024-06-14
-```
-
-**Option B — Python REPL / notebook**
-
-```python
-from pathlib import Path
-from datetime import date
-from app.etl.orchestration.pipeline import (
-    run_instruments_and_trades_pipeline,
-    run_intraday_quotes_pipeline,
-)
-
-# Load instruments + trades
-result = run_instruments_and_trades_pipeline(
-    instruments_csv=Path("data/raw/b3/boletim_diario/2024-06-14/cadastro_instrumentos_20240614.normalized.csv"),
-    trades_file=Path("data/raw/b3/boletim_diario/2024-06-14/negocios_consolidados_20240614.normalized.csv"),
-    target_date=date(2024, 6, 14),
-)
-print(result)
-# {'target_date': '2024-06-14', 'assets_upserted': 512, 'trades_upserted': 389, 'status': 'success'}
-
-# Load JSONL intraday quotes
-result = run_intraday_quotes_pipeline(
-    jsonl_path=Path("data/raw/b3/daily_fluctuation_history/2024-06-14/daily_fluctuation_20240614T100000.jsonl"),
-)
-print(result)
-# {'source_file': 'daily_fluctuation_20240614T100000.jsonl', 'rows_inserted': 7800, 'status': 'success'}
-```
-
-**Option C — HTTP API**
-
-```http
-POST http://localhost:8000/etl/run-latest
-
-POST http://localhost:8000/etl/backfill
-Content-Type: application/json
-
-{"date_from": "2024-06-01", "date_to": "2024-06-14"}
-```
-
-### 7. Run scrapers locally (requires Playwright + Chromium)
+### Docker: light stack (logs and rebuild)
 
 ```powershell
-playwright install chromium
-python scripts/run_b3_scraper.py
-python scripts/run_b3_scraper_negocios.py
-python scripts/run_b3_quote_batch.py
-```
-
----
-
-## Running with Docker (full pipeline)
-
-Compose uses two files:
-
-- **compose.yaml** — base definition for `db`, `scheduler`, `api` (default), and optional `cotahist` worker (profiles `full` or `cotahist`). Single source of truth.
-- **compose.override.yaml** — development overrides only (hot reload and bind mount of `./app` for the `api` service). It is merged automatically only when you run `docker compose up` with no `-f` flag: Compose then loads `compose.yaml` and merges `compose.override.yaml` if present. If you run `docker compose -f compose.yaml up`, only the base file is loaded; to include the override, use `docker compose -f compose.yaml -f compose.override.yaml up`. To run without overrides (e.g. production-like), use `docker compose -f compose.yaml up` so that only the base file is used.
-
-The API service is built from `Dockerfile.api` (slim image, no Playwright).
-
-```powershell
-# Build and start db + scheduler + api
-docker compose build
 docker compose up -d
-
-# Follow logs
 docker compose logs -f scheduler
 docker compose logs -f api
-docker compose logs -f db
 ```
 
-Compose builds the scheduler image as `etlb3_scheduler:local`; the optional `cotahist` worker reuses that same tag for deterministic startup in clean environments.
-
-**Application code inside the scheduler (no bind mount):** the default `compose.yaml` does **not** mount `./app` into the `scheduler` service. Only `compose.override.yaml` wires a live mount for the **`api`** service. So after you change Python under `app/`, you must rebuild the scheduler image and recreate the container or the running process will still use the old code (e.g. stack traces pointing at an outdated `scraping_output_validator.py`).
+After changing code under `app/`, **rebuild the scheduler image** if you are not bind-mounting it (default `compose.yaml` does not mount `./app` into `scheduler`):
 
 ```powershell
 docker compose build scheduler
 docker compose up -d --force-recreate scheduler
-# Or in one step when you also changed the Dockerfile:
-docker compose up -d --build --force-recreate scheduler
 ```
 
-The **scheduler** healthcheck uses `pgrep -f` against the Python module path `app.etl.orchestration.prefect.serve`. If that module path is renamed, update the pattern in `compose.yaml` or the container may be marked unhealthy despite a running process.
-
-On first start the **scheduler** container will:
-1. Wait for the `db` service healthcheck to pass (`depends_on: condition: service_healthy`)
-2. Run **entrypoint.sh** (data dirs, Alembic, optional **stack bootstrap**, Prefect home), then **`python -m app.etl.orchestration.prefect.serve`**
-3. Prefect registers **`daily-registry`** (cron, default 08:00 America/Sao_Paulo) and **`intraday-quotes`** (interval, default 30 minutes with a **fixed anchor** so ticks stay clock-aligned after restarts; the flow skips outside the B3 quote window)
-
-**Light bootstrap vs 08:00 cron:** When `SKIP_STACK_BOOTSTRAP_IF_FRESH` is enabled (default in Compose), if today’s cadastro CSV already exists under `B3_DATA_DIR`, bootstrap is skipped and the light marker is still written. The scheduled `daily-registry` run can still scrape the same day; pipelines should tolerate duplicate loads. Use `FORCE_STACK_BOOTSTRAP=true` to force a full bootstrap run.
-
-**Prefect `serve` contract:** `python -m app.etl.orchestration.prefect.serve` registers **lightweight** deployments only. It does **not** register COTAHIST or other heavy ingestors. Annual COTAHIST runs via the separate **`cotahist`** Compose service: `docker compose --profile full run --rm cotahist` (alias: `--profile cotahist`).
-
-**Migrations:** scheduler entrypoint runs `alembic upgrade head` before starting the runtime. You can still run it manually if needed: `docker compose exec scheduler /app/.venv/bin/alembic upgrade head`.
-
-### API service (default stack)
-
-`docker compose up -d` starts the API on port 8000. With `compose.override.yaml` present, the API runs with `--reload` and `./app` mounted, so code changes take effect without restarting the container.
-
-```powershell
-docker compose logs -f api
-# http://localhost:8000 — docs: http://localhost:8000/scalar
-```
-
-### Full-stack / heavy worker (COTAHIST and future heavy ingestors)
-
-Profile **`full`** names the **complete financial data stack** (today: optional `cotahist`; later: more services under the same profile). It is **not** a second long-running scheduler unless you deliberately change `restart` policies.
-
-Annual COTAHIST (B3 ZIPs → `fact_cotahist_daily`) runs in a **separate one-shot container** (not inside the Prefect scheduler). The Compose **command** runs `app.etl.orchestration.prefect.full_stack_bootstrap`, which checks a **marker file** on the shared volume (default `/app/data/.bootstrap_full_v1.done`) and **skips** re-running the heavy worker on subsequent starts unless `FORCE_FULL_STACK_BOOTSTRAP=true`. The wrapper then invokes `docker/cotahist_worker.py` (same logic as before).
-
-The service **does not** run Alembic; it waits until `fact_cotahist_daily` exists (scheduler migrations). It can run in parallel with lightweight jobs on the same DB and `scraper_data` volume.
-
-The `cotahist` service is **one-shot** (`restart: "no"`): it is **not** a resident sidecar. Prefer `docker compose run --rm` for clarity; `docker compose --profile full up -d` will start it once per `up` (subject to the marker gate above).
-
-```powershell
-# Preferred explicit execution (one-shot) — profile `full` (alias `cotahist`)
-docker compose --profile full run --rm cotahist
-
-# Optional detached execution
-docker compose --profile full up -d
-docker compose --profile full logs -f cotahist
-```
-
-Useful environment variables (all optional):
-
-| Variable | Purpose |
-|----------|---------|
-| `B3_COTAHIST_ANNUAL_DIR` | On-disk root for `{year}/COTAHIST_A*.TXT` (Compose default: `/app/data/raw/b3/cotahist_annual`) |
-| `COTAHIST_SKIP_DOWNLOAD` | If `1` / `true`: load only; assume TXT/ZIPs already on the volume |
-| `COTAHIST_YEAR` | Single year (do not combine with START/END) |
-| `COTAHIST_YEAR_START` / `COTAHIST_YEAR_END` | Inclusive range (both required) |
-| `COTAHIST_FAIL_FAST` | If `true`: stop the fetch script on first year error |
-| `COTAHIST_TABLE_WAIT_RETRIES` / `COTAHIST_TABLE_WAIT_DELAY_S` | Poll limits while waiting for `fact_cotahist_daily` after connect |
-| `COTAHIST_LOCK_KEY_1` / `COTAHIST_LOCK_KEY_2` | Postgres advisory-lock keys to prevent concurrent one-shot runs |
-| `RUN_FULL_STACK_BOOTSTRAP` | If `false`: wrapper exits without running the worker (default `true` in Compose) |
-| `STACK_FULL_BOOTSTRAP_MARKER` | Path to skip marker (default under `/app/data/`) |
-| `FORCE_FULL_STACK_BOOTSTRAP` | If `true`: run worker even when marker exists |
-
-If `COTAHIST_YEAR*` are unset, the worker uses `B3_COTAHIST_YEAR_START` / `B3_COTAHIST_YEAR_END` from app settings (see `app/core/config.py`).
-
-### Rebuild, stop, logs, shell
-
-```powershell
-# Rebuild API after dependency or Dockerfile.api changes
-docker compose build api
-docker compose up -d
-
-# Stop all services
-docker compose down
-
-# Logs
-docker compose logs -f api
-docker compose logs -f scheduler
-docker compose logs -f db
-
-# Shell inside the API container
-docker compose exec api /bin/bash
-```
-
-### Run the API without Docker
-
-Same as today: from the project root, with a venv and `.env` configured:
+### Local: API on the host
 
 ```powershell
 uv run uvicorn app.main:app --reload
 ```
 
-API base: `http://localhost:8000`, docs: `http://localhost:8000/scalar`.
+### Individual scripts (from repo root)
 
-### Manual operations inside the running container
+| Script | Purpose |
+|--------|---------|
+| [`scripts/run_etl.py`](scripts/run_etl.py) | Orchestrate pipeline steps (instruments, trades, daily quotes, intraday JSONL, COTAHIST) |
+| [`scripts/run_b3_scraper.py`](scripts/run_b3_scraper.py) | Cadastro (instruments) scraper |
+| [`scripts/run_b3_scraper_negocios.py`](scripts/run_b3_scraper_negocios.py) | Negócios consolidados scraper |
+| [`scripts/run_b3_quote_batch.py`](scripts/run_b3_quote_batch.py) | Intraday quote batch → JSONL |
+| [`scripts/run_prefect_daily_flow.py`](scripts/run_prefect_daily_flow.py) | Manual Prefect-style daily chain (options for registry-only, combined, COTAHIST) |
+| [`scripts/run_b3_cotahist_annual.py`](scripts/run_b3_cotahist_annual.py) | Download/extract/validate annual COTAHIST (no DB) |
+
+Examples:
 
 ```powershell
-# Apply migrations manually
-docker compose exec scheduler /app/.venv/bin/alembic upgrade head
+uv run python scripts/run_etl.py
+uv run python scripts/run_b3_scraper.py
+uv run python scripts/run_b3_quote_batch.py
+```
 
-# Run ETL pipeline manually
+Inside a running scheduler container:
+
+```powershell
 docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_etl.py
-
-# Run the default lightweight Prefect chain manually (bootstrap-equivalent: cadastro, negócios, intraday)
-docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_prefect_daily_flow.py
-# Registry-only (08:00-style): add --registry-only
-# Legacy combined flow with optional COTAHIST: add --combined --cotahist
-
-# With explicit paths
-docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_etl.py \
-    --instruments /app/data/raw/b3/boletim_diario/2026-03-08/cadastro_instrumentos_20260308.normalized.csv \
-    --date 2026-03-08
-
-# Trigger daily flow immediately
-docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_prefect_daily_flow.py
-
-# Run quote batch manually
-docker compose exec scheduler /app/.venv/bin/python /app/scripts/run_b3_quote_batch.py
-
-# Open psql
-docker compose exec db psql -U etlb3 -d etlb3
-
-# Check ETL audit log
-docker compose exec db psql -U etlb3 -d etlb3 \
-    -c "SELECT pipeline_name, status, rows_inserted, started_at FROM etl_runs ORDER BY started_at DESC LIMIT 10;"
-
-# Check hypertable info
-docker compose exec db psql -U etlb3 -d etlb3 \
-    -c "SELECT * FROM timescaledb_information.hypertables;"
+docker compose exec scheduler /app/docker/run_daily_batch.sh
 ```
 
-### Persistent volumes
-
-| Volume | Contents |
-|---|---|
-| `db_data` | PostgreSQL data files (TimescaleDB) |
-| `scraper_data` | Scraped raw files, JSONL, screenshots, traces |
-
-To reset the database (destructive!):
+### COTAHIST worker (optional, heavy)
 
 ```powershell
-docker compose down -v
-docker compose up -d
+docker compose --profile full run --rm cotahist
 ```
 
----
+Details, marker file, and env vars: [docs/architecture.md](docs/architecture.md#operational-notes).
 
-## Code quality
+## Common Commands
 
-Lint and static typing run on **every commit** if you install [pre-commit](https://pre-commit.com/) hooks ([Ruff](https://docs.astral.sh/ruff/), [ty](https://docs.astral.sh/ty/)). See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
+| Goal | Command |
+|------|---------|
+| Lint | `uv run ruff check .` |
+| Typecheck | `uv run ty check` |
+| Tests (default CI filter) | `uv run pytest tests/ -m "not e2e and not live and not db" --tb=short` |
+| Migrations | `uv run alembic upgrade head` |
+| Compose DB only | `docker compose up -d db` |
+| Compose logs | `docker compose logs -f api` |
 
-**One-time setup:**
+Dev hooks: `uv sync --locked --extra dev` then `uv run pre-commit install` — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```powershell
-uv sync --locked --extra dev
-uv run pre-commit install
-```
+## API Access
 
-**Manual checks (same as hooks / CI):**
+| Item | URL / note |
+|------|------------|
+| Base URL (local) | `http://localhost:8000` |
+| Health | `GET /health` |
+| Human-friendly reference | `GET /scalar` |
+| Machine-readable schema | `GET /openapi.json` |
 
-```powershell
-uv run ruff check .
-uv run ty check
-```
+Which endpoint to use for each goal: [docs/data-dictionary.md](docs/data-dictionary.md#api-consumer-guide).
 
-Configuration lives in `pyproject.toml` (`[tool.ruff]`, `[tool.ty]`). By default **ty** type-checks `app`, `scripts`, and `docker` only (not `tests/`), to keep the gate stable alongside dynamic test patterns.
+**Note:** `POST /etl/run-latest` and `POST /etl/backfill` only support **local** CSVs under `B3_DATA_DIR` on the API host; `source_mode=remote` returns **501** (use scheduler or scripts for Playwright).
 
----
+## Documentation Map
 
-## Running tests
+| Document | Audience |
+|----------|----------|
+| [docs/architecture.md](docs/architecture.md) | System context, containers, data flow, ops |
+| [docs/data-dictionary.md](docs/data-dictionary.md) | Data meanings and API consumer guide |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Hooks, lint, typecheck, CI |
+| [.env.example](.env.example) | **Source of truth** for environment variables (names, defaults, notes) |
 
-Layout follows a **testing pyramid** (see [TESTING-STRATEGY.md](TESTING-STRATEGY.md)): fast **unit** tests, **integration** tests (TestClient, `respx`, entrypoints), and optional **E2E** black-box HTTP when `E2E_BASE_URL` is set.
+**Source-of-truth split (intentional):** This README stays short. Material that used to live in a long README table—**every env var, schedules, bootstrap, COTAHIST flags, compose edge cases**—now belongs in **[`.env.example`](.env.example)** (variables) and **[docs/architecture.md](docs/architecture.md)** (runtime, containers, data flow, operational notes). If something is missing, check those two before opening an issue.
 
-**Default CI / local suite** — no real browser, no live HTTP, no optional DB smoke tests:
+## Intended Audience
+
+This README targets **operators**, **new contributors**, and **API users** who need to run the stack quickly. Deep architecture, data sources, and ETL internals live in **`docs/architecture.md`**; field-level API orientation is in **`docs/data-dictionary.md`**.
+
+## Running Tests
+
+Tests follow a pyramid: fast **unit** tests, **integration** tests (TestClient, `respx`, scripts), optional **E2E** when `E2E_BASE_URL` is set, and optional **db**-marked tests when Postgres is up.
 
 ```powershell
 uv run pytest tests/ -m "not e2e and not live and not db" --tb=short
-```
-
-**Fast unit-only loop:**
-
-```powershell
 uv run pytest tests/unit -q
 ```
 
-**With coverage** (`pytest-cov`; config in `pyproject.toml`):
-
-```powershell
-uv run pytest tests/ -m "not e2e and not live and not db" --cov --cov-report=term-missing
-```
-
-**Optional PostgreSQL smoke** (`@pytest.mark.db`) — requires a reachable `DATABASE_URL` (e.g. `docker compose up -d db` + `alembic upgrade head`):
+With database (`docker compose up -d db` + migrations):
 
 ```powershell
 uv run pytest tests/ -m db -v
 ```
 
-**Optional E2E** — start the API, then set `E2E_BASE_URL` (e.g. `http://127.0.0.1:8000`):
+E2E (API must be running):
 
 ```powershell
 $env:E2E_BASE_URL = "http://127.0.0.1:8000"
 uv run pytest tests/e2e -m e2e -v
 ```
 
-### Test layout
+More detail: [CONTRIBUTING.md](CONTRIBUTING.md) and layout under `tests/`.
 
-| Path | Focus |
-|------|--------|
-| `tests/unit/` | Pure logic: column mapping, CSV resolver, ticker filter, asset sanitization / upsert SQL shape (mocked session). |
-| `tests/integration/test_api.py` | FastAPI `TestClient`: health, Scalar/OpenAPI, route smoke; ETL routes with mocked pipeline; `/quotes/latest` ticker parsing. |
-| `tests/integration/test_b3_quotes.py` | B3 client (`respx`), parsers, cache, use cases, quote routes, `read_tickers`, batch ingestion (JSONL + report). |
-| `tests/integration/test_prefect_startup_contract.py` | Compose + Docker entrypoint contract (DB health, migrations, bootstrap order, cotahist profile). |
-| `tests/integration/test_cotahist_worker.py` | Docker cotahist worker: advisory lock, scraper_run_audit around annual fetch, ETL subprocess. |
-| `tests/integration/test_cli_entrypoints.py` | CLI `main()` dispatch (mocked pipelines/scrapers). |
-| `tests/integration/test_run_daily_batch.py` | `docker/run_daily_batch.sh` contract (bash `-n`, expected invocations). |
-| `tests/integration/test_db_smoke.py` | `SELECT 1` against real Postgres when available (skipped if DB down). |
-| `tests/integration/test_cotahist_db.py` | COTAHIST ingest idempotency on `fact_cotahist_daily` (`-m db`). |
-| `tests/unit/test_cotahist_*.py` | COTAHIST URL, ZIP extract, parser, normaliser, stats. |
-| `tests/e2e/test_api_blackbox.py` | `httpx` against running API (`E2E_BASE_URL`). |
-| `tests/conftest.py` | Shared `client` fixture (`TestClient`). |
-| `tests/fixtures/` | Static CSV samples and Polars builders. |
-
-Coverage sources: `app`, `docker`, `scripts` (see `[tool.coverage.run]` in `pyproject.toml`).
-
-### CI and repo layout notes
-
-- **GitHub Actions:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on push and pull requests targeting `main` or `master` (Ruff, ty, pytest with the same marker filter as above). If you remove or rename this workflow, update this README and [CONTRIBUTING.md](CONTRIBUTING.md).
-- **Tests** were reorganized from a flat `tests/test_*.py` layout into `tests/unit/`, `tests/integration/`, and `tests/e2e/` (shared `tests/conftest.py`). Older module names such as `test_b3_quote_integration.py` live on as `tests/integration/test_b3_quotes.py`.
-- **Legacy DB-heavy integration tests** that lived at paths like `tests/test_load_integration.py` / `tests/test_pipeline.py` are not in the current tree; coverage for loaders/pipelines is intentionally slimmer and documented in the table above.
-
----
-
-## Alembic migration commands
+## Alembic
 
 ```powershell
-alembic upgrade head        # apply all pending migrations
-alembic downgrade -1        # roll back one step
-alembic current             # show current revision
-alembic history             # show full history
-alembic revision --autogenerate -m "describe_change"  # create migration from model
+uv run alembic upgrade head
+uv run alembic current
+uv run alembic history
 ```
 
----
+See [Alembic](https://alembic.sqlalchemy.org/) for revision workflows.
 
-## Notes
+## License
 
-- `alembic upgrade head` is safe to run multiple times (idempotent).
-- The TimescaleDB extension is enabled by `docker/initdb/01_timescaledb.sql` which runs automatically on first DB container start.
-- The `fact_quotes` hypertable is created in migration `0002_schema_v2` via `SELECT create_hypertable(...)`. The migration works on plain PostgreSQL too — without TimescaleDB, `fact_quotes` is a regular table.
-- Prefect flow orchestration now lives under `app/etl/orchestration/prefect/` and is the recommended path for local + Docker orchestration runs.
-- `DATABASE_URL` is the single source of truth for the database connection. Individual `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` components are documented in `.env.example` as reference.
-
----
-
-License: see PKG-INFO / project metadata
+See project metadata / PKG-INFO.

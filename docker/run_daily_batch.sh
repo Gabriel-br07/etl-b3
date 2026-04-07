@@ -8,9 +8,8 @@
 #  - Retry each scraper individually on transient failures
 #
 # NOTE: ETL invocation (discovery + load) is not in this script. Default
-# production orchestration is Prefect (docs/etl_canonical_runtime.md). Legacy
-# Manual or ad-hoc use from the scheduler container; default orchestration is Prefect
-# (see docs/etl_canonical_runtime.md). Compose documents: docker compose exec scheduler /app/docker/run_daily_batch.sh
+# production orchestration is Prefect (see docs/architecture.md). Manual/ad-hoc
+# use from the scheduler container: docker compose exec scheduler /app/docker/run_daily_batch.sh
 # =============================================================================
 set -euo pipefail
 IFS=$'\n\t'

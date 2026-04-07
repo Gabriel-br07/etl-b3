@@ -33,7 +33,7 @@ uv run pre-commit run --all-files
 
 ## Tests
 
-See [README.md](README.md) § *Running tests* and [TESTING-STRATEGY.md](TESTING-STRATEGY.md).
+See [README.md](README.md) (section *Running tests*).
 
 ## CI
 
