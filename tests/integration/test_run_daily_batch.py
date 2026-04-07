@@ -1,6 +1,6 @@
 """Contract tests for docker/run_daily_batch.sh.
 
-Canonical runtime uses Prefect flows (see docs/etl_canonical_runtime.md). This
+Canonical runtime uses Prefect flows (see docs/architecture.md). This
 shell script is a manual/ad-hoc helper to run both daily Playwright scrapers from
 the scheduler image. These tests verify the script contract without running real
 scrapers (syntax check + expected script paths and args).
