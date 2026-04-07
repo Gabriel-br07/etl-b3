@@ -103,12 +103,16 @@ def test_main_commits_after_lock_acquisition(monkeypatch):
     assert finish_audit.call_args.kwargs["audit_id"] == 9001
 
 
-def test_fetch_stage_calls_start_audit_before_subprocess(monkeypatch):
+def test_fetch_stage_calls_start_audit_before_subprocess(monkeypatch, tmp_path):
     worker = _load_worker_module()
+
+    data_root = tmp_path / "cotahist"
+    (data_root / "2024").mkdir(parents=True)
+    (data_root / "2024" / "COTAHIST_A2024.TXT").write_text("dummy", encoding="utf-8")
 
     fake_config = ModuleType("app.core.config")
     fake_config.settings = SimpleNamespace(
-        b3_cotahist_annual_dir="/tmp/cotahist",
+        b3_cotahist_annual_dir=str(data_root),
         b3_cotahist_year_start=2000,
         b3_cotahist_year_end=2001,
     )
@@ -413,12 +417,16 @@ def test_fetch_failure_still_exits_with_return_code_when_finish_audit_raises(mon
     assert exc.value.code == 7
 
 
-def test_success_path_completes_etl_when_finish_audit_raises(monkeypatch, capsys):
+def test_success_path_completes_etl_when_finish_audit_raises(monkeypatch, capsys, tmp_path):
     worker = _load_worker_module()
+
+    data_root = tmp_path / "cotahist"
+    (data_root / "2024").mkdir(parents=True)
+    (data_root / "2024" / "COTAHIST_A2024.TXT").write_text("dummy", encoding="utf-8")
 
     fake_config = ModuleType("app.core.config")
     fake_config.settings = SimpleNamespace(
-        b3_cotahist_annual_dir="/tmp/cotahist",
+        b3_cotahist_annual_dir=str(data_root),
         b3_cotahist_year_start=2000,
         b3_cotahist_year_end=2001,
     )
