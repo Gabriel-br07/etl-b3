@@ -44,6 +44,9 @@ def test_parse_b3_locale_number_dot_as_thousands_no_comma() -> None:
     """Quantities like ``1.500`` (pt-BR thousands) must not become ``1.5``."""
     assert parse_b3_locale_number("1.500") == 1500.0
     assert parse_b3_locale_number("100.000") == 100_000.0
+    assert parse_b3_locale_number("-1.500") == -1500.0
+    assert parse_b3_locale_number("-100.000") == -100_000.0
+    assert parse_b3_locale_number("+1.500") == 1500.0
 
 
 def test_parse_b3_locale_number_invalid_returns_none() -> None:

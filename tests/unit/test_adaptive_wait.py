@@ -40,6 +40,17 @@ def test_run_with_adaptive_wait_retries_then_succeeds():
     assert calls == [1000, 1300, 1950]
 
 
+def test_run_with_adaptive_wait_rejects_non_positive_max_attempts():
+    with pytest.raises(ValueError, match="max_attempts"):
+        run_with_adaptive_wait(
+            action_label="noop",
+            action=lambda _ms: None,
+            base_timeout_ms=100,
+            max_attempts=0,
+            scraper_name="b3",
+        )
+
+
 def test_run_with_adaptive_wait_non_transient_fails_immediately():
     calls = 0
 
