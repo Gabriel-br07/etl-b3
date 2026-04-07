@@ -47,6 +47,8 @@ def run_with_adaptive_wait(
     scraper_name: str = "unknown",
 ) -> Any:
     """Run an action with adaptive timeout only for transient failures."""
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         timeout_ms = adaptive_timeout_ms(base_timeout_ms, attempt)
