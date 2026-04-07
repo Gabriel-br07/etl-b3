@@ -295,10 +295,42 @@ def _run_fetch_subprocess_with_scraper_audit(
                 )
                 sys.exit(r.returncode)
 
-            paths = [
-                cotahist_root / str(y) / f"COTAHIST_A{y}.TXT" for y in range(lo, hi + 1)
-            ]
-            last_path = paths[-1]
+            # Derive years from disk (parity with Prefect scrape_cotahist_task); do not trust rc=0 alone.
+            txt_paths_existing: list[Path] = []
+            years_skipped: list[int] = []
+            for y in range(lo, hi + 1):
+                p = cotahist_root / str(y) / f"COTAHIST_A{y}.TXT"
+                if p.is_file():
+                    txt_paths_existing.append(p)
+                else:
+                    years_skipped.append(y)
+            years_ok = [int(p.parent.name) for p in txt_paths_existing]
+
+            if not txt_paths_existing:
+                err_msg = (
+                    f"fetch script exited 0 but no COTAHIST_A*.TXT found for years {lo}-{hi} "
+                    f"(years_skipped_404={years_skipped})"
+                )
+                log.error("[cotahist_worker] %s audit_id=%s", err_msg, audit_id)
+                _safe_finish_scraper_audit(
+                    audit_id,
+                    status="failed",
+                    retry_count=0,
+                    error_type="RuntimeError",
+                    error_message=err_msg,
+                    metadata_json={
+                        **base,
+                        "returncode": r.returncode,
+                        "year_range": [lo, hi],
+                        "paths": [],
+                        "years_ok": [],
+                        "years_skipped_404": years_skipped,
+                    },
+                )
+                audit_finished = True
+                sys.exit(1)
+
+            last_path = txt_paths_existing[-1]
             _safe_finish_scraper_audit(
                 audit_id,
                 status="success",
@@ -307,9 +339,10 @@ def _run_fetch_subprocess_with_scraper_audit(
                 output_file_name=last_path.name,
                 metadata_json={
                     **base,
-                    "paths": [str(p) for p in paths],
-                    "years_ok": list(range(lo, hi + 1)),
-                    "years_skipped_404": [],
+                    "year_range": [lo, hi],
+                    "paths": [str(p) for p in txt_paths_existing],
+                    "years_ok": years_ok,
+                    "years_skipped_404": years_skipped,
                 },
             )
             audit_finished = True
