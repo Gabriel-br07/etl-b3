@@ -47,7 +47,7 @@ _NEGOCIOS_VALUE = TABLE_CONFIG["negocios_consolidados"][0]
 
 #: Visible label used as fallback when the select value is not matched
 _NEGOCIOS_LABEL = "Negócios consolidados do pregão"
-_EXPORT_READY_PAUSE_MS = 2_000
+_EXPORT_READY_PAUSE_MS = 6_000
 
 
 class NegociosConsolidadosScraper(BaseScraper):

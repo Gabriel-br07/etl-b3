@@ -1,11 +1,9 @@
 """Contract tests for docker/run_daily_batch.sh.
 
-Used by legacy ``docker/scheduler.py`` (non-default Docker CMD). Canonical
-runtime uses Prefect flows; see docs/legacy_scheduler.md.
-
-The script runs the two daily Playwright scrapers. These tests verify the
-script contract without running real scrapers (syntax check + expected script
-paths and args).
+Canonical runtime uses Prefect flows (see docs/etl_canonical_runtime.md). This
+shell script is a manual/ad-hoc helper to run both daily Playwright scrapers from
+the scheduler image. These tests verify the script contract without running real
+scrapers (syntax check + expected script paths and args).
 """
 
 from __future__ import annotations

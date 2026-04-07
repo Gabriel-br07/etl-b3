@@ -2,25 +2,29 @@
 # compose.yaml — etl-b3 stack
 # =============================================================================
 #
-# Architecture: TWO core services + ONE optional API service.
+# Architecture: db + scheduler (Prefect) + API (default) + optional full-stack worker.
 #
 #   db         — TimescaleDB (PostgreSQL 16) with persistent named volume
-#   scheduler  — Prefect-first ETL orchestration (canonical runtime):
-#                  ENTRYPOINT entrypoint.sh → CMD: python -m app.etl.orchestration.prefect.serve
-#                  Serves daily_scraping_flow (+ cotahist-on-demand). See docs/etl_canonical_runtime.md
-#                  Manual: run_prefect_daily_flow.py, run_etl.py, legacy docker/scheduler.py (docs/legacy_scheduler.md)
-#   api        — FastAPI HTTP API (optional — enable with --profile api)
+#   scheduler  — Prefect orchestration (canonical runtime):
+#                  ENTRYPOINT entrypoint.sh → optional bootstrap →
+#                  CMD: python -m app.etl.orchestration.prefect.serve
+#                  Deployments: daily-registry (08:00 America/Sao_Paulo), intraday-quotes (interval).
+#                  See docs/etl_canonical_runtime.md
+#   api        — FastAPI HTTP API (starts with default `docker compose up -d`)
 #                  Scalar docs at http://localhost:8000/scalar
+#   cotahist   — one-shot annual COTAHIST fetch+load (profile full or cotahist)
+#                  Same image as scheduler; shares scraper_data; does not run Alembic.
+#                  Depends only on db (healthy); worker waits for fact_cotahist_daily.
 #
 # Startup sequence:
-#   db starts → healthcheck passes → scheduler (and optionally api) start
-#   ENTRYPOINT entrypoint.sh  (runs as root – chowns /app/data → exec scraper)
+#   db starts → healthcheck passes → scheduler + api start
+#   ENTRYPOINT entrypoint.sh  (runs as root – chowns /app/data → bootstrap as scraper → exec CMD)
 #   CMD        Prefect serve (see Dockerfile command; runs as scraper uid 1001)
 #
 # Quick start:
 #   docker compose build
-#   docker compose up -d                        # db + scheduler only
-#   docker compose --profile api up -d         # db + scheduler + API
+#   docker compose up -d                        # db + scheduler + api
+#   docker compose --profile full run --rm cotahist   # heavy / full data stack (COTAHIST)
 #   docker compose logs -f scheduler
 #
 # Run migrations manually (first time or after schema changes):
@@ -63,6 +67,7 @@ services:
   # Scheduler: Playwright scrapers + ETL pipeline
   # ---------------------------------------------------------------------------
   scheduler:
+    image: etlb3_scheduler:local
     build:
       context: .
       dockerfile: Dockerfile
@@ -74,12 +79,16 @@ services:
       TZ: America/Sao_Paulo
       PLAYWRIGHT_HEADLESS: "true"
       PLAYWRIGHT_SLOW_MO: "0"
-      # Pipeline schedule
-      DAILY_RUN_HOUR: "20"
-      DAILY_RUN_MINUTE: "0"
-      # Intraday loop interval (seconds) — 1800 = 30 minutes (updated)
-      SCRAPER_INTERVAL_SECONDS: "1800"
-      # CSV discovery retry settings
+      # Prefect schedules (America/Sao_Paulo — see app/etl/orchestration/prefect/serve.py)
+      PREFECT_DAILY_REGISTRY_CRON: "0 8 * * *"
+      PREFECT_INTRADAY_INTERVAL_MINUTES: "30"
+      # B3 session window for intraday flow (update when B3 circulars change)
+      B3_EQUITIES_SESSION_OPEN: "10:00"
+      B3_EQUITIES_SESSION_CLOSE: "17:00"
+      B3_QUOTE_WINDOW_PADDING_BEFORE_MINUTES: "10"
+      B3_QUOTE_WINDOW_PADDING_AFTER_MINUTES: "10"
+      B3_MARKET_TIMEZONE: "America/Sao_Paulo"
+      # CSV discovery retry settings (scrapers / resolvers)
       RETRY_COUNT: "3"
       RETRY_DELAY_SECONDS: "60"
       # Data directories (must match entrypoint.sh logic)
@@ -108,23 +117,30 @@ services:
       DB_POOL_RECYCLE: "1800"
       # Logging
       LOG_LEVEL: INFO
+      # Skip light bootstrap if today’s cadastro CSV already exists (reduces overlap with 08:00 cron)
+      SKIP_STACK_BOOTSTRAP_IF_FRESH: "true"
     shm_size: "1gb"
     volumes:
       - scraper_data:/app/data
-    # Prefect-first command: serve daily/cotahist deployments
+    # Prefect-first command: serve recurring deployments only
     command: ["/app/.venv/bin/python", "-m", "app.etl.orchestration.prefect.serve"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f \"app\\.etl\\.orchestration\\.prefect\\.serve\" >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # API: FastAPI HTTP interface (optional — enable with: --profile api)
+  # API: FastAPI HTTP interface (default stack)
   #
   # Usage:
-  #   docker compose --profile api up -d
+  #   docker compose up -d
   #   curl http://localhost:8000/health
   #   open http://localhost:8000/scalar
   # ---------------------------------------------------------------------------
   api:
-    profiles: [api]
     build:
       context: .
       dockerfile: Dockerfile.api
@@ -151,7 +167,64 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - scraper_data:/app/data
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "/app/.venv/bin/python -c \"import sys, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2); sys.exit(0 if r.status == 200 else 1)\""
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # COTAHIST: annual ZIP fetch + load (full / expanded data stack)
+  #
+  # One-shot container (restart: no) — not a long-running sidecar. Command runs
+  # full_stack_bootstrap (marker-gated) which delegates to cotahist_worker.py.
+  # Profiles: `full` (preferred) or `cotahist` (backward compatible alias).
+  #
+  #   docker compose --profile full run --rm cotahist   # explicit (preferred)
+  #   docker compose --profile full up -d             # starts one-shot once per up
+  # ---------------------------------------------------------------------------
+  cotahist:
+    profiles: [full, cotahist]
+    image: etlb3_scheduler:local
+    container_name: etlb3_cotahist
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: America/Sao_Paulo
+      B3_DATA_DIR: /app/data/raw
+      B3_COTAHIST_ANNUAL_DIR: /app/data/raw/b3/cotahist_annual
+      HOME: /home/scraper
+      PREFECT_HOME: /home/scraper/.prefect
+      PREFECT_PROFILES_PATH: /home/scraper/.prefect/profiles.toml
+      PYTHONPATH: /app
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      LANG: "C.UTF-8"
+      LC_ALL: "C.UTF-8"
+      DATABASE_URL: postgresql://etlb3:etlb3pass@db:5432/etlb3
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "10"
+      DB_POOL_RECYCLE: "1800"
+      COTAHIST_LOCK_KEY_1: "4242"
+      COTAHIST_LOCK_KEY_2: "1"
+      LOG_LEVEL: INFO
+      RUN_FULL_STACK_BOOTSTRAP: "true"
+      STACK_FULL_BOOTSTRAP_MARKER: /app/data/.bootstrap_full_v1.done
+    volumes:
+      - scraper_data:/app/data
+    entrypoint: ["/app/docker/entrypoint_cotahist.sh"]
+    command:
+      [
+        "/app/.venv/bin/python",
+        "-m",
+        "app.etl.orchestration.prefect.full_stack_bootstrap",
+      ]
+    restart: "no"
 
 volumes:
   db_data:

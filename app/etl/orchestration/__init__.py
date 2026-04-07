@@ -6,7 +6,7 @@ initialization when only lightweight helpers such as ``csv_resolver`` are needed
 
 Canonical runtime::
 
-    from app.etl.orchestration.prefect.flows.daily_scraping_flow import daily_scraping_flow
+    from app.etl.orchestration.prefect.flows.daily_scraping_flow import daily_registry_flow
 
 See ``docs/etl_canonical_runtime.md``.
 """

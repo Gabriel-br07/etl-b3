@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 
 #: CSS option value for "Cadastro de instrumentos"
 _INSTRUMENTS_VALUE = TABLE_CONFIG["cadastro_instrumentos"][0]
-_EXPORT_READY_PAUSE_MS = 2_000
+_EXPORT_READY_PAUSE_MS = 6_000
 
 
 class BoletimDiarioScraper(BaseScraper):

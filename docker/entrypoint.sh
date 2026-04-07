@@ -43,6 +43,7 @@ echo "[entrypoint] ensuring ${VOLUME_ROOT} tree owned by scraper(1001)"
 mkdir -p \
     "${DATA_DIR}/b3/boletim_diario" \
     "${DATA_DIR}/b3/daily_fluctuation_history" \
+    "${DATA_DIR}/b3/cotahist_annual" \
     "${VOLUME_ROOT}/screenshots/b3" \
     "${VOLUME_ROOT}/traces/e2e"
 current_owner="$(stat -c '%u:%g' "${VOLUME_ROOT}" 2>/dev/null || echo '')"
@@ -58,6 +59,7 @@ ${DATA_DIR}
 ${DATA_DIR}/b3
 ${DATA_DIR}/b3/boletim_diario
 ${DATA_DIR}/b3/daily_fluctuation_history
+${DATA_DIR}/b3/cotahist_annual
 ${VOLUME_ROOT}/screenshots
 ${VOLUME_ROOT}/screenshots/b3
 ${VOLUME_ROOT}/traces
@@ -111,6 +113,24 @@ echo "[entrypoint] running migrations: alembic upgrade head"
 if ! /app/.venv/bin/alembic upgrade head; then
     echo "[entrypoint] ERROR: migration step failed; refusing to start runtime." >&2
     exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Optional lightweight bootstrap (cadastro + negócios + intraday) before CMD
+# ---------------------------------------------------------------------------
+_run_bootstrap=true
+case "${RUN_STACK_BOOTSTRAP:-true}" in
+    0|false|f|no|n|off|FALSE|NO|OFF) _run_bootstrap=false ;;
+esac
+if [ "${_run_bootstrap}" = "true" ]; then
+    echo "[entrypoint] running stack bootstrap as scraper(1001): app.etl.orchestration.prefect.bootstrap"
+    if ! setpriv --reuid=1001 --regid=1001 --clear-groups -- \
+        /app/.venv/bin/python -m app.etl.orchestration.prefect.bootstrap; then
+        echo "[entrypoint] ERROR: stack bootstrap failed; refusing to start runtime." >&2
+        exit 1
+    fi
+else
+    echo "[entrypoint] skipping stack bootstrap (RUN_STACK_BOOTSTRAP disabled)"
 fi
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-# Entrypoint-focused: app, docker/scheduler, scripts
+# Entrypoint-focused: app, docker, scripts
 source = ["app", "docker", "scripts"]
 omit = [
     "*/tests/*",
