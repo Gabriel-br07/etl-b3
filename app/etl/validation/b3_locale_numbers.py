@@ -38,13 +38,18 @@ def parse_b3_locale_number(value: str | None) -> float | None:
             t = t.replace(",", ".")
             return float(t)
         if "." in t:
-            parts = t.split(".")
+            sign = ""
+            body = t
+            if body[:1] in "+-":
+                sign = body[:1]
+                body = body[1:]
+            parts = body.split(".")
             if all(p.isdigit() for p in parts):
                 if len(parts) > 2:
-                    return float("".join(parts))
+                    return float(sign + "".join(parts))
                 if len(parts) == 2 and len(parts[1]) == 3:
                     # e.g. ``1.500`` → 1500 (pt-BR thousands, no fractional part)
-                    return float(parts[0] + parts[1])
+                    return float(sign + parts[0] + parts[1])
         return float(t)
     except ValueError:
         return None

@@ -44,32 +44,53 @@ def _is_audit_db_unavailable(exc: BaseException) -> bool:
 def scrape_cadastro_task(target_date: date) -> Path:
     logger = get_run_logger()
     retry_count = _current_retry_count()
-    audit_id = start_scraper_audit(
-        scraper_name="cadastro_instrumentos",
-        target_date=target_date,
-        retry_count=retry_count,
-        status="retrying" if retry_count > 0 else "running",
-    )
+    audit_id: int | None = None
+    try:
+        audit_id = start_scraper_audit(
+            scraper_name="cadastro_instrumentos",
+            target_date=target_date,
+            retry_count=retry_count,
+            status="retrying" if retry_count > 0 else "running",
+        )
+    except Exception as audit_exc:  # noqa: BLE001
+        if _is_audit_db_unavailable(audit_exc):
+            logger.warning(
+                "scraper audit unavailable (DB); running cadastro scrape without audit: %s",
+                audit_exc,
+            )
+        else:
+            raise
+
     try:
         result = BoletimDiarioScraper().scrape(target_date)[0]
         out = result.normalized_file_path or result.file_path
-        finish_scraper_audit(
-            audit_id=audit_id,
-            status="success",
-            retry_count=retry_count,
-            output_path=str(out),
-            output_file_name=out.name,
-        )
+        if audit_id is not None:
+            finish_scraper_audit(
+                audit_id=audit_id,
+                status="success",
+                retry_count=retry_count,
+                output_path=str(out),
+                output_file_name=out.name,
+            )
         logger.info("cadastro scrape done: %s", out)
         return out
     except Exception as exc:  # noqa: BLE001
-        finish_scraper_audit(
-            audit_id=audit_id,
-            status="failed",
-            retry_count=retry_count,
-            error_type=type(exc).__name__,
-            error_message=str(exc),
-        )
+        if audit_id is not None:
+            try:
+                finish_scraper_audit(
+                    audit_id=audit_id,
+                    status="failed",
+                    retry_count=retry_count,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+            except Exception as audit_exc:  # noqa: BLE001
+                logger.warning(
+                    "failed to persist scraper audit failure for audit_id=%s after cadastro error %s: %s",
+                    audit_id,
+                    type(exc).__name__,
+                    audit_exc,
+                )
         raise
 
 
@@ -77,32 +98,53 @@ def scrape_cadastro_task(target_date: date) -> Path:
 def scrape_negocios_task(target_date: date) -> Path:
     logger = get_run_logger()
     retry_count = _current_retry_count()
-    audit_id = start_scraper_audit(
-        scraper_name="negocios_consolidados",
-        target_date=target_date,
-        retry_count=retry_count,
-        status="retrying" if retry_count > 0 else "running",
-    )
+    audit_id: int | None = None
+    try:
+        audit_id = start_scraper_audit(
+            scraper_name="negocios_consolidados",
+            target_date=target_date,
+            retry_count=retry_count,
+            status="retrying" if retry_count > 0 else "running",
+        )
+    except Exception as audit_exc:  # noqa: BLE001
+        if _is_audit_db_unavailable(audit_exc):
+            logger.warning(
+                "scraper audit unavailable (DB); running negocios scrape without audit: %s",
+                audit_exc,
+            )
+        else:
+            raise
+
     try:
         result = NegociosConsolidadosScraper().scrape(target_date)[0]
         out = result.normalized_file_path or result.file_path
-        finish_scraper_audit(
-            audit_id=audit_id,
-            status="success",
-            retry_count=retry_count,
-            output_path=str(out),
-            output_file_name=out.name,
-        )
+        if audit_id is not None:
+            finish_scraper_audit(
+                audit_id=audit_id,
+                status="success",
+                retry_count=retry_count,
+                output_path=str(out),
+                output_file_name=out.name,
+            )
         logger.info("negocios scrape done: %s", out)
         return out
     except Exception as exc:  # noqa: BLE001
-        finish_scraper_audit(
-            audit_id=audit_id,
-            status="failed",
-            retry_count=retry_count,
-            error_type=type(exc).__name__,
-            error_message=str(exc),
-        )
+        if audit_id is not None:
+            try:
+                finish_scraper_audit(
+                    audit_id=audit_id,
+                    status="failed",
+                    retry_count=retry_count,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+            except Exception as audit_exc:  # noqa: BLE001
+                logger.warning(
+                    "failed to persist scraper audit failure for audit_id=%s after negocios error %s: %s",
+                    audit_id,
+                    type(exc).__name__,
+                    audit_exc,
+                )
         raise
 
 
@@ -115,14 +157,26 @@ def scrape_cotahist_task(target_date: date, enabled: bool = True) -> list[Path] 
     """
     log = get_logger(__name__)
     retry_count = _current_retry_count()
-    audit_id = start_scraper_audit(
-        scraper_name="cotahist",
-        target_date=target_date,
-        retry_count=retry_count,
-        status="retrying" if retry_count > 0 else "running",
-    )
+    audit_id: int | None = None
+    try:
+        audit_id = start_scraper_audit(
+            scraper_name="cotahist",
+            target_date=target_date,
+            retry_count=retry_count,
+            status="retrying" if retry_count > 0 else "running",
+        )
+    except Exception as audit_exc:  # noqa: BLE001
+        if _is_audit_db_unavailable(audit_exc):
+            log.warning(
+                "scraper audit unavailable (DB); running cotahist fetch without audit: %s",
+                audit_exc,
+            )
+        else:
+            raise
+
     if not enabled:
-        finish_scraper_audit(audit_id=audit_id, status="skipped", retry_count=retry_count)
+        if audit_id is not None:
+            finish_scraper_audit(audit_id=audit_id, status="skipped", retry_count=retry_count)
         return None
     try:
         lo = int(settings.b3_cotahist_year_start)
@@ -154,28 +208,38 @@ def scrape_cotahist_task(target_date: date, enabled: bool = True) -> list[Path] 
             )
             raise RuntimeError(msg)
 
-        finish_scraper_audit(
-            audit_id=audit_id,
-            status="success",
-            retry_count=retry_count,
-            output_path=str(txt_paths[-1]),
-            output_file_name=txt_paths[-1].name,
-            metadata_json={
-                "year_range": [lo, hi],
-                "paths": [str(p) for p in txt_paths],
-                "years_ok": [int(p.parent.name) for p in txt_paths],
-                "years_skipped_404": skipped_years,
-            },
-        )
+        if audit_id is not None:
+            finish_scraper_audit(
+                audit_id=audit_id,
+                status="success",
+                retry_count=retry_count,
+                output_path=str(txt_paths[-1]),
+                output_file_name=txt_paths[-1].name,
+                metadata_json={
+                    "year_range": [lo, hi],
+                    "paths": [str(p) for p in txt_paths],
+                    "years_ok": [int(p.parent.name) for p in txt_paths],
+                    "years_skipped_404": skipped_years,
+                },
+            )
         return txt_paths
     except Exception as exc:  # noqa: BLE001
-        finish_scraper_audit(
-            audit_id=audit_id,
-            status="failed",
-            retry_count=retry_count,
-            error_type=type(exc).__name__,
-            error_message=str(exc),
-        )
+        if audit_id is not None:
+            try:
+                finish_scraper_audit(
+                    audit_id=audit_id,
+                    status="failed",
+                    retry_count=retry_count,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+            except Exception as audit_exc:  # noqa: BLE001
+                log.warning(
+                    "failed to persist scraper audit failure for audit_id=%s after cotahist error %s: %s",
+                    audit_id,
+                    type(exc).__name__,
+                    audit_exc,
+                )
         raise
 
 
